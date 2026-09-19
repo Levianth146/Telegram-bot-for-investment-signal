@@ -1,0 +1,38 @@
+# Cấu hình bật/tắt từng tầng — xem mục 11.1 (P0/P1/P2) trong tài liệu framework.
+# Tắt một tầng P1/P2 ở đây KHÔNG được làm crash pipeline; mỗi module phải tự
+# xử lý trường hợp enabled=false bằng giá trị fallback (xem docs/ARCHITECTURE.md).
+
+universe:
+  name: "VN100_sample"
+  size: 100
+
+fundamental_filter:
+  growth: { enabled: true, tier: P0 }
+  quality: { enabled: true, tier: P0 }
+  safety_accounting: { enabled: true, tier: P0 }
+  safety_merton_dd: { enabled: false, tier: P2 }   # bật sau khi qua data audit
+  valuation: { enabled: true, tier: P0 }
+  valuation_dcf: { enabled: false, tier: P2 }       # cần nhiều dữ liệu giả định
+
+quant_engine:
+  regime_markov: { enabled: true, tier: P0 }
+  alpha_kalman_trend: { enabled: true, tier: P0 }
+  alpha_ou_meanreversion: { enabled: true, tier: P0 }
+  risk_garch: { enabled: true, tier: P0 }
+  portfolio_black_litterman: { enabled: false, tier: P1 }  # fallback: equal-weight
+  probabilistic_monte_carlo: { enabled: false, tier: P1 }  # fallback: không hiện xác suất
+  probabilistic_hawkes: { enabled: false, tier: P2 }       # cần data audit
+
+backtest:
+  start_date: "2019-01-01"
+  cost:
+    tax_sell_pct: 0.001
+    fee_roundtrip_pct: 0.003
+  walk_forward:
+    train_years: 3
+    test_months: 6
+
+scoring:
+  method: "percentile_zscore"   # xem mục 10 tài liệu framework
+  pass_percentile: 0.60
+  fail_percentile: 0.30
