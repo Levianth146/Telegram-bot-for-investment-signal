@@ -7,3 +7,4 @@ data/cache/*
 !data/cache/.gitkeep
 *.log
 .ipynb_checkpoints/
+graphify-out/cost.json
