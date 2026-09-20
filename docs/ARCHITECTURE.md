@@ -78,3 +78,34 @@ Cắt một tầng P1/P2 = set `enabled: false` trong `pipeline/config.yaml`, kh
 Xem `store/schema.sql`. Cột bắt buộc: `date, ticker, action, score, p_regime, sigma_hat,
 stop, size, p_tp_before_sl, cvar95, reason_json`. Đây là "API nội bộ" — mọi thay đổi schema
 này phải thông báo cho cả nhóm `bot/` lẫn `backtest/`.
+
+## Các bảng lệnh Telegram khác (`positions`, `subscribers`, `backtest_results`)
+
+3 bảng này phục vụ lệnh bot ngoài `/check` và `/signals`, cũng chỉ được `bot/` ĐỌC, không
+bao giờ tự tính toán:
+
+- **`positions`** — trạng thái paper-trading đang giữ, KHÁC với `signals` (vốn là output mô
+  hình mỗi phiên, không phải "đang giữ hay không"). Do `pipeline/` hoặc 1 job paper-trading
+  riêng ghi vào; `bot/` chỉ đọc qua `get_open_positions()` cho lệnh `/positions`.
+- **`subscribers`** — ai đã bật `/subscribe` để nhận push tự động; `pipeline/daily_job.py`
+  đọc bảng này sau khi ghi `signals` xong để biết gửi cho `chat_id` nào.
+- **`backtest_results`** — kết quả backtest chạy ĐỊNH KỲ (không phải mỗi lần người dùng gõ
+  `/backtest`, vì walk-forward trên cả rổ quá tốn để chạy real-time). `backtest/` ghi vào
+  đây sau mỗi lần chạy theo lịch (hoặc sau khi merge thay đổi model vào `main`, gắn vào CI);
+  `bot/` chỉ đọc để trả lời `/backtest`.
+
+## Bảng lệnh bot dự kiến
+
+| Lệnh | Đọc từ bảng | Có phân tầng hiển thị 4 khối như `/check` không |
+|---|---|---|
+| `/start` | — | Không — text tĩnh |
+| `/signals` | `signals` (hôm nay) | Không — 1 dòng/mã, gợi ý `/check <mã>` để xem chi tiết |
+| `/check <mã>` | `fundamental_scores`, `signals` | **Có** — 4 khối: Bộ lọc cơ bản (Tầng 1) → Trạng thái thị trường (Regime) → Tín hiệu vào lệnh (Alpha) → Rủi ro & khối lượng (Risk/Probabilistic) |
+| `/watchlist` | `watchlist` | Không |
+| `/regime` | `signals` (cột `p_regime`, lấy theo thị trường chung) | Không — 1 khối |
+| `/chart <mã> [loại]` | `bot/charts.py` đọc từ `signals`/`fundamental_scores` | Không áp dụng — là ảnh, không phải text phân tầng |
+| `/backtest <mã\|portfolio>` | `backtest_results` (đã tính sẵn) | Không |
+| `/positions` | `positions` | Không — dạng bảng |
+| `/subscribe`, `/unsubscribe` | `subscribers` | Không |
+| `/status` | đọc `pipeline/config.yaml` + timestamp lần chạy job gần nhất | Không |
+| `/about` | — | Không — text tĩnh + disclaimer bắt buộc |

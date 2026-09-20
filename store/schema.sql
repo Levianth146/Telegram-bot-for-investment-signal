@@ -41,3 +41,44 @@ CREATE TABLE IF NOT EXISTS signals (
 
 CREATE INDEX IF NOT EXISTS idx_signals_ticker ON signals (ticker);
 CREATE INDEX IF NOT EXISTS idx_watchlist_date ON watchlist (as_of_date);
+
+-- Theo dõi vị thế paper-trading (KHÁC với `signals`: signals là output mô hình mỗi
+-- phiên, positions là trạng thái "đang thực sự giữ" — phục vụ lệnh /positions).
+CREATE TABLE IF NOT EXISTS positions (
+    ticker              TEXT NOT NULL,
+    opened_at           DATE NOT NULL,
+    entry_price         REAL NOT NULL,
+    stop_price          REAL NOT NULL,
+    size_pct_nav        REAL NOT NULL,
+    status              TEXT CHECK (status IN ('OPEN','CLOSED')) DEFAULT 'OPEN',
+    closed_at           DATE,
+    close_price         REAL,
+    pnl_pct             REAL,
+    PRIMARY KEY (ticker, opened_at)
+);
+
+-- Người dùng Telegram đã bật thông báo tự động — phục vụ /subscribe, /unsubscribe.
+CREATE TABLE IF NOT EXISTS subscribers (
+    chat_id             INTEGER PRIMARY KEY,
+    subscribed_at       DATETIME NOT NULL,
+    is_active           INTEGER NOT NULL DEFAULT 1  -- 0 sau khi /unsubscribe, giữ lịch sử
+);
+
+-- Kết quả backtest chạy ĐỊNH KỲ (không phải theo mỗi lần người dùng gõ /backtest —
+-- walk-forward trên cả rổ quá tốn để chạy real-time). pipeline/ ghi vào đây, bot/ chỉ đọc.
+CREATE TABLE IF NOT EXISTS backtest_results (
+    run_id              TEXT NOT NULL,      -- vd commit hash hoặc timestamp lần chạy
+    run_at              DATETIME NOT NULL,
+    scope               TEXT NOT NULL,      -- ticker cụ thể hoặc 'portfolio'
+    baseline            TEXT CHECK (baseline IN ('framework','B0_buyhold','B1_ta','B2_canslim')),
+    cagr                REAL,
+    sharpe              REAL,
+    max_drawdown        REAL,
+    win_rate            REAL,
+    n_trades            INTEGER,
+    equity_curve_json   TEXT,               -- mảng [{date, equity}] để vẽ chart
+    PRIMARY KEY (run_id, scope, baseline)
+);
+
+CREATE INDEX IF NOT EXISTS idx_positions_status ON positions (status);
+CREATE INDEX IF NOT EXISTS idx_backtest_scope ON backtest_results (scope, run_at);

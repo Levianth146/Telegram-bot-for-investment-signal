@@ -31,3 +31,37 @@ def get_latest_signals(conn: sqlite3.Connection, as_of_date: str | None = None) 
 
 def get_watchlist(conn: sqlite3.Connection, as_of_date: str | None = None) -> list[str]:
     raise NotImplementedError
+
+
+def open_position(conn: sqlite3.Connection, position: dict) -> None:
+    """Ghi 1 vị thế mới (status='OPEN') — dùng khi paper-trading engine vào lệnh
+    theo tín hiệu BUY. Bot chỉ ĐỌC bảng này qua get_open_positions, không tự mở lệnh.
+    """
+    raise NotImplementedError
+
+
+def close_position(conn: sqlite3.Connection, ticker: str, opened_at: str, close_price: float,
+                    closed_at: str) -> None:
+    raise NotImplementedError
+
+
+def get_open_positions(conn: sqlite3.Connection) -> list[dict]:
+    """Bot dùng hàm này để trả lời /positions — CHỈ ĐỌC."""
+    raise NotImplementedError
+
+
+def set_subscription(conn: sqlite3.Connection, chat_id: int, is_active: bool) -> None:
+    """Dùng cho /subscribe và /unsubscribe. is_active=False vẫn giữ lại dòng (lịch sử),
+    không xóa — để biết ai đã từng đăng ký."""
+    raise NotImplementedError
+
+
+def get_active_subscribers(conn: sqlite3.Connection) -> list[int]:
+    """pipeline/daily_job.py dùng hàm này để biết push tín hiệu cho chat_id nào."""
+    raise NotImplementedError
+
+
+def get_backtest_results(conn: sqlite3.Connection, scope: str, run_id: str | None = None) -> list[dict]:
+    """Bot dùng hàm này để trả lời /backtest — CHỈ ĐỌC kết quả đã tính sẵn theo lịch
+    định kỳ trong backtest_results. `run_id=None` -> lấy lần chạy mới nhất."""
+    raise NotImplementedError
