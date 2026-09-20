@@ -67,3 +67,53 @@ def render_backtest_equity_curve_chart(scope: str, run_id: str, out_path: str | 
     ("chưa có kết quả backtest, chờ lần chạy định kỳ tiếp theo") thay vì tự chạy.
     """
     raise NotImplementedError
+
+
+def render_drawdown_chart(scope: str, run_id: str, out_path: str | Path) -> Path:
+    """Underwater/drawdown chart — vùng % dưới đỉnh (peak-to-trough) theo thời gian,
+    tính từ `equity_curve_json`. Bổ trợ trực quan cho `max_drawdown` +
+    `max_drawdown_days` trong backtest_results: cho thấy "đau bao lâu", không chỉ
+    "đau bao nhiêu".
+    """
+    raise NotImplementedError
+
+
+def render_rolling_sharpe_chart(scope: str, run_id: str, window_days: int = 126,
+                                 out_path: str | Path = None) -> Path:
+    """Sharpe tính trên cửa sổ trượt (mặc định ~6 tháng giao dịch). Dùng để kiểm tra
+    hiệu suất có ổn định theo thời gian hay chỉ tốt nhờ vài giai đoạn may mắn — khác
+    với sharpe tổng trong backtest_results vốn chỉ là 1 con số duy nhất cho cả giai đoạn.
+    """
+    raise NotImplementedError
+
+
+def render_trade_pnl_histogram(scope: str, run_id: str, out_path: str | Path) -> Path:
+    """Histogram PnL% thực tế của từng lệnh đã đóng trong backtest (đọc từ bảng
+    `positions` đã CLOSED, lọc theo run tương ứng nếu backtest ghi ngược vào đó, hoặc
+    từ dữ liệu trade-level lưu kèm trong backtest_results).
+
+    LƯU Ý: đây là kết quả THỰC TẾ sau backtest, khác với
+    `render_monte_carlo_distribution_chart` (dự báo TRƯỚC khi vào lệnh). Nên hiện 2
+    chart này cạnh nhau khi làm báo cáo ablation để đối chiếu dự báo vs thực tế.
+    """
+    raise NotImplementedError
+
+
+def render_regime_conditional_equity_chart(scope: str, run_id: str, out_path: str | Path) -> Path:
+    """Equity curve tách theo regime (tô màu đoạn nào chạy trong lúc P(bull) cao vs
+    thấp) — kiểm định trực tiếp giả thuyết cốt lõi của Markov regime switching: nếu
+    framework không thắng rõ hơn đúng lúc regime đúng, lớp Regime coi như chưa chứng
+    minh được giá trị (đối chiếu `sharpe_bull_regime`/`sharpe_bear_regime` trong
+    backtest_results). Tier P1 — cần logic tách đoạn theo regime, không chỉ vẽ lại
+    equity curve có sẵn.
+    """
+    raise NotImplementedError
+
+
+def render_sector_overview_chart(as_of_date: str, out_path: str | Path) -> Path:
+    """Tổng quan theo ngành cho lệnh /sector — bao nhiêu mã PASS/WATCH/FAIL mỗi
+    ngành (đọc `sector_mapping` JOIN `watchlist`), và P/E trung vị ngành so với lịch
+    sử của chính ngành đó (không so ngành này với ngành khác — P/E không so sánh được
+    xuyên ngành, xem mục 10 tài liệu framework).
+    """
+    raise NotImplementedError

@@ -1,28 +1,28 @@
 # Graph Report - Telegram-bot-for-investment-signal  (2026-09-20)
 
 ## Corpus Check
-- 84 files · ~25,845 words
+- 45 files · ~8,690 words
 - Verdict: corpus is large enough that graph structure adds value.
-- Unclassified: 11 file(s) not represented in the graph (top: (none) 6, .mdc 2, .example 2)
+- Unclassified: 10 file(s) not represented in the graph (top: (none) 6, .mdc 2, .example 1)
 
 ## Summary
-- 614 nodes · 1094 edges · 49 communities (34 shown, 15 thin omitted)
-- Extraction: 99% EXTRACTED · 1% INFERRED · 0% AMBIGUOUS · INFERRED: 6 edges (avg confidence: 0.87)
+- 281 nodes · 264 edges · 41 communities (28 shown, 13 thin omitted)
+- Extraction: 100% EXTRACTED · 0% INFERRED · 0% AMBIGUOUS · INFERRED: 1 edges (avg confidence: 0.95)
 - Token cost: 0 input · 0 output
 
 ## Graph Freshness
-- Built from commit: `86d7262f`
+- Built from commit: `595f1bd6`
 - Run `git rev-parse HEAD` and compare to check if the graph is stale.
 - Run `graphify update .` after code changes (no API cost).
 
 ## Community Hubs (Navigation)
 - growth.py
-- fundamental_engine.py
+- walk_forward.py
 - repository.py
 - formatters.py
 - quality.py
 - safety.py
-- ratios_valuation.py
+- test_regime.py
 - garch.py
 - valuation.py
 - black_litterman.py
@@ -39,62 +39,50 @@
 - test_integration_smoke.py
 - 4. Quy trình làm việc hằng ngày — làm đúng thứ tự này mỗi lần
 - charts.py
-- pandas
+- Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư
 - Hướng dẫn đóng góp
 - Data Feasibility Audit — điền trong 2–3 ngày đầu tuần 1
 - Telegram Bot Tín hiệu Đầu tư Chứng khoán Việt Nam
 - Chiến lược branch & quy trình làm việc
 - PULL_REQUEST_TEMPLATE.md
 - Nhật ký quyết định giữ/cắt một tầng (ablation log)
-- get_fundamental_snapshot
-- validate_ticker.py
-- ClassificationTests
-- score_current_universe
-- select_peer_universe
-- SafetyScoringTests
-- Fintech Stock Bot — Fundamental Layer
-- walk_forward.py
 
 ## God Nodes (most connected - your core abstractions)
-1. `get_fundamental_snapshot()` - 30 edges
-2. `get_historical_fundamental()` - 30 edges
-3. `get_valuation()` - 22 edges
-4. `analyze_fundamental_universe()` - 16 edges
-5. `get_financial_data()` - 15 edges
-6. `ClassificationTests` - 15 edges
-7. `audit_ticker()` - 13 edges
-8. `calculate_metric_scores()` - 12 edges
-9. `SafetyScoringTests` - 12 edges
-10. `score_current_universe()` - 11 edges
+1. `4. Quy trình làm việc hằng ngày — làm đúng thứ tự này mỗi lần` - 10 edges
+2. `Hướng dẫn dùng Repo (dành cho người mới dùng Git/GitHub)` - 9 edges
+3. `Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư` - 8 edges
+4. `Hướng dẫn đóng góp` - 6 edges
+5. `Telegram Bot Tín hiệu Đầu tư Chứng khoán Việt Nam` - 6 edges
+6. `Data Feasibility Audit — điền trong 2–3 ngày đầu tuần 1` - 6 edges
+7. `6. Các tình huống hay gặp và cách xử lý` - 6 edges
+8. `Chiến lược branch & quy trình làm việc` - 5 edges
+9. `get_open_positions()` - 4 edges
+10. `render_price_regime_chart()` - 3 edges
 
 ## Surprising Connections (you probably didn't know these)
 - `Các bảng lệnh Telegram khác (`positions`, `subscribers`, `backtest_results`)` --references--> `get_open_positions()`  [INFERRED]
   docs/ARCHITECTURE.md → store/repository.py
-- `get_historical_fundamental()` --calls--> `get_financial_data()`  [EXTRACTED]
-  fundamental_filter/layer1_engine/historical_fundamental.py → fundamental_filter/layer1_engine/financial_data.py
-- `audit_ticker()` --calls--> `get_financial_data()`  [EXTRACTED]
-  fundamental_filter/layer1_engine/validate_ticker.py → fundamental_filter/layer1_engine/financial_data.py
-- `audit_ticker()` --calls--> `get_latest_reported_financial_data()`  [EXTRACTED]
-  fundamental_filter/layer1_engine/validate_ticker.py → fundamental_filter/layer1_engine/financial_data.py
-- `score_current_universe()` --calls--> `classify_fundamental_universe()`  [EXTRACTED]
-  fundamental_filter/layer1_engine/fundamental_engine.py → fundamental_filter/layer1_engine/fundamental_classification.py
+- `test_revenue_growth_yoy_not_implemented_yet()` --calls--> `revenue_growth_yoy()`  [EXTRACTED]
+  fundamental_filter/tests/test_growth.py → fundamental_filter/growth.py
+- `test_filtered_regime_probability_not_implemented_yet()` --calls--> `filtered_regime_probability()`  [EXTRACTED]
+  quant_engine/tests/test_regime.py → quant_engine/regime.py
 
 ## Import Cycles
 - None detected.
 
-## Communities (49 total, 15 thin omitted)
+## Communities (41 total, 13 thin omitted)
 
 ### Community 0 - "growth.py"
-Cohesion: 0.08
-Nodes (23): fundamental_filter, eps_cagr(), growth_score(), growth_spread(), positive_growth_ratio(), Module Growth — Câu hỏi 1: Doanh nghiệp có thật sự tăng trưởng không? Tham…, Mục 2.1 — Revenue Growth YoY = (Rev_t - Rev_t-1) / Rev_t-1., Mục 2.2 — Growth Spread = NPAT Growth - Revenue Growth (chỉ báo chẩn đoán). (+15 more)
+Cohesion: 0.12
+Nodes (15): fundamental_filter, eps_cagr(), growth_score(), growth_spread(), positive_growth_ratio(), Module Growth — Câu hỏi 1: Doanh nghiệp có thật sự tăng trưởng không? Tham…, Mục 2.1 — Revenue Growth YoY = (Rev_t - Rev_t-1) / Rev_t-1., Mục 2.2 — Growth Spread = NPAT Growth - Revenue Growth (chỉ báo chẩn đoán). (+7 more)
 
-### Community 1 - "fundamental_engine.py"
-Cohesion: 0.06
-Nodes (47): argparse, analyze_fundamental(), analyze_fundamental_universe(), _empty_historical_percentiles(), _normalize_tickers(), Run the Fundamental Layer in memory for an explicit ticker universe., Backward-compatible single-ticker entry point without stale CSV state., get_module_score_file() (+39 more)
+### Community 1 - "walk_forward.py"
+Cohesion: 0.14
+Nodes (6): argparse, Walk-forward validation — train N năm, test M tháng, trượt cửa sổ tới. Tham…, Sinh ra danh sách (train_start, train_end, test_start, test_end)., walk_forward_windows(), Job Tầng 2 — chạy mỗi phiên, sau giờ đóng cửa (~15:00). Luồng: store.watchlist…, Job Tầng 1 — chạy lại mỗi khi có BCTC mới (event-driven, theo quý). Luồng:…
 
 ### Community 2 - "repository.py"
-Cohesion: 0.07
-Nodes (36): Connection, Bảng lệnh bot dự kiến, Bảng `signals` (hợp đồng giao diện giữa Tầng 2 và bot), Chart backtest bổ sung (`bot/charts.py`), Các bảng lệnh Telegram khác (`positions`, `subscribers`, `backtest_results`), Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư, Module ↔ người phụ trách (theo phân công đã thống nhất), Nguyên tắc bất biến (không được vi phạm khi code) (+28 more)
+Cohesion: 0.13
+Nodes (22): Connection, Các bảng lệnh Telegram khác (`positions`, `subscribers`, `backtest_results`), sqlite3, close_position(), get_active_subscribers(), get_backtest_results(), get_connection(), get_latest_signals() (+14 more)
 
 ### Community 3 - "formatters.py"
 Cohesion: 0.20
@@ -108,9 +96,9 @@ Nodes (9): cash_conversion(), dupont_decomposition(), quality_score(), Module Qu
 Cohesion: 0.20
 Nodes (9): interest_coverage(), merton_distance_to_default(), net_debt_to_ebitda(), Module Safety — Câu hỏi 3: Doanh nghiệp có an toàn tài chính không? Tham chiếu:…, Mục 4.2 — headline metric của module Safety (xem mục 6.1)., Mục 4.3 — supporting metric, chỉ nói khi Net Debt/EBITDA đang xấu đi., Mục 4.6 (P2, ADVANCED) — Distance-to-Default theo Bharath & Shumway (2008). CHỈ…, Tổng hợp điểm Safety. Đọc… (+1 more)
 
-### Community 6 - "ratios_valuation.py"
-Cohesion: 0.06
-Nodes (56): base64, datetime, dotenv, create_headers(), get_close_price(), get_historical_close_price(), get_live_close_price(), parse_as_of_date() (+48 more)
+### Community 6 - "test_regime.py"
+Cohesion: 0.22
+Nodes (8): quant_engine, filtered_regime_probability(), fit_markov_regime(), Regime — Markov switching trên VN-Index. Tham chiếu: Mục 8 lớp 1 / mục 9 của…, Fit Hidden Markov Model trên lợi nhuận VN-Index. Trả về model đã fit.…, Trả về P(state=k | F_t) CHỈ dùng dữ liệu tới thời điểm t (filtered, không…, Ví dụ test cho module Regime., test_filtered_regime_probability_not_implemented_yet()
 
 ### Community 7 - "garch.py"
 Cohesion: 0.20
@@ -145,8 +133,8 @@ Cohesion: 0.33
 Nodes (5): fit_ou_process(), ou_half_life(), Ornstein-Uhlenbeck mean reversion — dùng khi regime đang đi ngang. Tham chiếu:…, Ước lượng theta, mu, sigma từ chuỗi residual (giá - trend Kalman)., half_life = ln(2) / theta.
 
 ### Community 15 - "schema.sql"
-Cohesion: 0.22
-Nodes (12): backtest_results, fundamental_scores, idx_backtest_scope, idx_positions_status, idx_sector_industry, idx_signals_ticker, idx_watchlist_date, positions (+4 more)
+Cohesion: 0.25
+Nodes (10): backtest_results, fundamental_scores, idx_backtest_scope, idx_positions_status, idx_signals_ticker, idx_watchlist_date, positions, signals (+2 more)
 
 ### Community 16 - "costs.py"
 Cohesion: 0.40
@@ -165,20 +153,20 @@ Cohesion: 0.08
 Nodes (25): 1. Vài khái niệm cần hiểu trước (bằng ví dụ, không phải định nghĩa hàn lâm), 2. Cài đặt — chọn 1 trong 2 cách, 3. Lấy code về máy lần đầu (chỉ làm 1 lần), 4. Quy trình làm việc hằng ngày — làm đúng thứ tự này mỗi lần, 5. Tôi nên sửa file ở đâu?, 6. Các tình huống hay gặp và cách xử lý, 7. Bảng lệnh Git tối thiểu cần nhớ (nếu dùng dòng lệnh), 8. Nếu vẫn bị kẹt (+17 more)
 
 ### Community 33 - "charts.py"
-Cohesion: 0.11
-Nodes (24): Vẽ chart để bot gửi qua Telegram (ảnh PNG, gửi qua sendPhoto). QUAN TRỌNG —…, Equity curve tách theo regime (tô màu đoạn nào chạy trong lúc P(bull) cao vs…, Tổng quan theo ngành cho lệnh /sector — bao nhiêu mã PASS/WATCH/FAIL mỗi ngành…, Giá + đường trend Kalman + nền tô theo regime (bull/bear). Thay cho biểu đồ nến…, Dải biến động dự báo GARCH quanh giá — tương tự Bollinger Bands về mặt hình ảnh…, Histogram phân phối kết quả mô phỏng Monte Carlo — không có tương đương TA, thể…, Radar 4 trục Growth/Quality/Safety/Valuation (z-score theo ngành, mục 10) —…, RSI/EMA/Volume — CHỈ gọi khi người dùng chủ động xin (`/chart <mã> ta`), luôn… (+16 more)
+Cohesion: 0.17
+Nodes (15): Vẽ chart để bot gửi qua Telegram (ảnh PNG, gửi qua sendPhoto). QUAN TRỌNG —…, Giá + đường trend Kalman + nền tô theo regime (bull/bear). Thay cho biểu đồ nến…, Dải biến động dự báo GARCH quanh giá — tương tự Bollinger Bands về mặt hình ảnh…, Histogram phân phối kết quả mô phỏng Monte Carlo — không có tương đương TA, thể…, Radar 4 trục Growth/Quality/Safety/Valuation (z-score theo ngành, mục 10) —…, RSI/EMA/Volume — CHỈ gọi khi người dùng chủ động xin (`/chart <mã> ta`), luôn…, Đọc `equity_curve_json` của framework + 3 baseline (B0/B1/B2) từ bảng…, render_backtest_equity_curve_chart() (+7 more)
 
-### Community 34 - "pandas"
-Cohesion: 0.09
-Nodes (45): _as_bool(), classify_fundamental_universe(), get_output_file(), Classify an explicit current-run universe; never scan old artifacts., run_fundamental_classification(), calculate_metric_scores(), get_output_file(), get_scoring_input_file() (+37 more)
+### Community 34 - "Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư"
+Cohesion: 0.25
+Nodes (7): Bảng lệnh bot dự kiến, Bảng `signals` (hợp đồng giao diện giữa Tầng 2 và bot), Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư, Module ↔ người phụ trách (theo phân công đã thống nhất), Nguyên tắc bất biến (không được vi phạm khi code), Phân tầng ưu tiên P0 / P1 / P2, Sơ đồ luồng dữ liệu
 
 ### Community 35 - "Hướng dẫn đóng góp"
 Cohesion: 0.29
 Nodes (6): Chuẩn code, Câu hỏi thường gặp, Hướng dẫn đóng góp, Mở Pull Request, Test, Trước khi bắt đầu một task
 
 ### Community 36 - "Data Feasibility Audit — điền trong 2–3 ngày đầu tuần 1"
-Cohesion: 0.25
-Nodes (7): 1. Dữ liệu nợ chi tiết (cho Merton Distance-to-Default), 2. Dữ liệu khối lượng/sự kiện theo ngày (cho Hawkes), 3. Dữ liệu khối ngoại / tự doanh ròng (cho Institutional Flow — nếu làm), 4. BCTC — ngày công bố thực tế (cho point-in-time discipline), 4b. `vnfinancialdata` — có field ngày công bố thật không?, Data Feasibility Audit — điền trong 2–3 ngày đầu tuần 1, Kết luận cuối audit
+Cohesion: 0.29
+Nodes (6): 1. Dữ liệu nợ chi tiết (cho Merton Distance-to-Default), 2. Dữ liệu khối lượng/sự kiện theo ngày (cho Hawkes), 3. Dữ liệu khối ngoại / tự doanh ròng (cho Institutional Flow — nếu làm), 4. BCTC — ngày công bố thực tế (cho point-in-time discipline), Data Feasibility Audit — điền trong 2–3 ngày đầu tuần 1, Kết luận cuối audit
 
 ### Community 37 - "Telegram Bot Tín hiệu Đầu tư Chứng khoán Việt Nam"
 Cohesion: 0.29
@@ -196,49 +184,25 @@ Nodes (5): Checklist, Cách test, Issue liên quan, Thay đổi gì, Đây là t
 Cohesion: 0.50
 Nodes (3): Log thực tế của nhóm, Mẫu ghi log, Nhật ký quyết định giữ/cắt một tầng (ablation log)
 
-### Community 41 - "get_fundamental_snapshot"
-Cohesion: 0.18
-Nodes (26): get_fundamental_snapshot(), get_historical_fundamental(), cfo_growth_yoy(), eps_cagr_3_year(), eps_growth_yoy(), free_cash_flow(), revenue_cagr_3_year(), revenue_growth_yoy() (+18 more)
-
-### Community 42 - "validate_ticker.py"
-Cohesion: 0.17
-Nodes (19): contextlib, audit_ticker(), _close(), _expected_classification(), _fmt(), _formula_check(), _independent_ratios(), _independent_valuation() (+11 more)
-
-### Community 44 - "score_current_universe"
-Cohesion: 0.21
-Nodes (6): Write only final production outputs; debug frames are opt-in and isolated., Score and classify only the explicitly supplied current-run universe., score_current_universe(), _write_debug_frames(), write_run_outputs(), FundamentalRefactorTests
-
-### Community 45 - "select_peer_universe"
-Cohesion: 0.30
-Nodes (5): _apply_size_filter(), _clean_tickers(), Select one deterministic peer universe and return audit metadata., select_peer_universe(), PeerSelectionTests
-
-### Community 47 - "Fintech Stock Bot — Fundamental Layer"
-Cohesion: 0.20
-Nodes (9): Architecture, Data limitations, Financial modules, Fintech Stock Bot — Fundamental Layer, Outputs, Reproducibility, Run, Setup — Windows PowerShell (+1 more)
-
-### Community 48 - "walk_forward.py"
-Cohesion: 0.40
-Nodes (3): Walk-forward validation — train N năm, test M tháng, trượt cửa sổ tới. Tham…, Sinh ra danh sách (train_start, train_end, test_start, test_end)., walk_forward_windows()
-
 ## Knowledge Gaps
-- **65 isolated node(s):** `fundamental_scores`, `subscribers`, `Issue liên quan`, `Thay đổi gì`, `Đây là tầng P0 / P1 / P2? (xem docs/ARCHITECTURE.md)` (+60 more)
-  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 220 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
-- **15 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
+- **55 isolated node(s):** `fundamental_scores`, `subscribers`, `Issue liên quan`, `Thay đổi gì`, `Đây là tầng P0 / P1 / P2? (xem docs/ARCHITECTURE.md)` (+50 more)
+  These have ≤1 connection - possible missing edges or undocumented components. (Counts symbols only; 167 node(s) total have ≤1 connection when file, concept and rationale nodes are included.)
+- **13 thin communities (<3 nodes) omitted from report** — run `graphify query` to explore isolated nodes.
 
 ## Suggested Questions
 _Questions this graph is uniquely positioned to answer:_
 
-- **Why does `ClassificationTests` connect `ClassificationTests` to `pandas`?**
-  _High betweenness centrality (0.020) - this node is a cross-community bridge._
-- **Why does `get_historical_fundamental()` connect `get_fundamental_snapshot` to `fundamental_engine.py`, `ratios_valuation.py`?**
-  _High betweenness centrality (0.019) - this node is a cross-community bridge._
+- **Why does `Các bảng lệnh Telegram khác (`positions`, `subscribers`, `backtest_results`)` connect `repository.py` to `Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư`?**
+  _High betweenness centrality (0.008) - this node is a cross-community bridge._
+- **Why does `Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư` connect `Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư` to `repository.py`?**
+  _High betweenness centrality (0.008) - this node is a cross-community bridge._
 - **What connects `fundamental_scores`, `subscribers`, `Issue liên quan` to the rest of the system?**
-  _65 weakly-connected nodes found - possible documentation gaps or missing edges._
+  _55 weakly-connected nodes found - possible documentation gaps or missing edges._
 - **Should `growth.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.07977207977207977 - nodes in this community are weakly interconnected._
-- **Should `fundamental_engine.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.06187202538339503 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.125 - nodes in this community are weakly interconnected._
+- **Should `walk_forward.py` be split into smaller, more focused modules?**
+  _Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected._
 - **Should `repository.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.07112375533428165 - nodes in this community are weakly interconnected._
-- **Should `ratios_valuation.py` be split into smaller, more focused modules?**
-  _Cohesion score 0.056140350877192984 - nodes in this community are weakly interconnected._
+  _Cohesion score 0.12648221343873517 - nodes in this community are weakly interconnected._
+- **Should `4. Quy trình làm việc hằng ngày — làm đúng thứ tự này mỗi lần` be split into smaller, more focused modules?**
+  _Cohesion score 0.07692307692307693 - nodes in this community are weakly interconnected._

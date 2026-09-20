@@ -56,8 +56,10 @@ Filter + Quant Regime Engine" mà nhóm đã thống nhất. Đọc file `.docx`
 |---|---|---|
 | P0 | Growth/Quality/Safety/Valuation | `fundamental_filter/` |
 | P0 | Regime, Alpha (Kalman/OU), Risk (GARCH) | `quant_engine/regime.py`, `quant_engine/alpha/`, `quant_engine/risk/` |
-| P0 | Backtest + ablation cơ bản | `backtest/` |
+| P0 | Backtest + ablation cơ bản (CAGR/Sharpe/MaxDD/Win rate + turnover/Sortino/Calmar/profit factor) | `backtest/` |
+| P0 | Phân loại market/sector/industry/subindustry (hạ tầng cho z-score theo ngành, mục 10) | `store/schema.sql:sector_mapping` |
 | P1 | Black-Litterman, Monte Carlo | `quant_engine/portfolio/`, `quant_engine/probabilistic/monte_carlo.py` |
+| P1 | CVaR calibration (dự báo vs thực tế), Sharpe theo regime, lệnh `/sector` | `backtest/ablation.py`, `bot/charts.py` |
 | P2 | Merton DD, Hawkes, Institutional Flow | `fundamental_filter/safety.py` (DD), `quant_engine/probabilistic/hawkes.py` |
 
 Cắt một tầng P1/P2 = set `enabled: false` trong `pipeline/config.yaml`, không phải xóa code.
@@ -104,8 +106,17 @@ bao giờ tự tính toán:
 | `/watchlist` | `watchlist` | Không |
 | `/regime` | `signals` (cột `p_regime`, lấy theo thị trường chung) | Không — 1 khối |
 | `/chart <mã> [loại]` | `bot/charts.py` đọc từ `signals`/`fundamental_scores` | Không áp dụng — là ảnh, không phải text phân tầng |
-| `/backtest <mã\|portfolio>` | `backtest_results` (đã tính sẵn) | Không |
+| `/backtest <mã\|portfolio>` | `backtest_results` (đã tính sẵn, gồm cả turnover/Sortino/Calmar/profit factor) | Không |
 | `/positions` | `positions` | Không — dạng bảng |
 | `/subscribe`, `/unsubscribe` | `subscribers` | Không |
 | `/status` | đọc `pipeline/config.yaml` + timestamp lần chạy job gần nhất | Không |
+| `/sector <ngành>` (P1) | `sector_mapping` JOIN `watchlist` | Không — tổng quan top-down, khác vai trò với `/check` (bottom-up 1 mã) |
 | `/about` | — | Không — text tĩnh + disclaimer bắt buộc |
+
+## Chart backtest bổ sung (`bot/charts.py`)
+
+Ngoài 5 chart theo mã đã có (price/risk/prob/fundamental/ta), phần backtest có thêm:
+equity curve so baseline, drawdown (underwater) chart, rolling Sharpe, histogram PnL
+từng lệnh đã đóng (đối chiếu với chart Monte Carlo — 1 cái là dự báo trước khi vào lệnh,
+1 cái là kết quả thực sau khi đóng lệnh), và equity curve tách theo regime (P1, kiểm định
+trực tiếp giá trị của lớp Regime).

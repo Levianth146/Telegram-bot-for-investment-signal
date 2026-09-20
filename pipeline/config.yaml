@@ -6,6 +6,44 @@ universe:
   name: "VN100_sample"
   size: 100
 
+# Nguồn dữ liệu & thứ tự fallback — xem đánh giá đầy đủ trong docs/DATA_AUDIT.md.
+# QUAN TRỌNG: data/providers/ implement 1 interface chung theo từng loại dữ liệu bên
+# dưới (vd PriceProvider, FinancialStatementProvider); pipeline/ CHỈ gọi qua interface
+# đó, không hardcode tên nguồn cụ thể ở bất kỳ file nào khác ngoài config này. Muốn đổi
+# thứ tự ưu tiên hay thêm/bớt nguồn thì sửa ở đây, không sửa code.
+data_sources:
+  price:
+    # Giá/khớp lệnh cho Tầng 2 (Regime/Kalman/OU/GARCH), gọi lại mỗi phiên.
+    # Thử lần lượt theo thứ tự, nguồn lỗi/timeout thì log lại rồi thử nguồn kế tiếp.
+    chain: [dnse, vnstock, cafef]
+    notes: >
+      dnse = DNSE Market Data API (cần API key, hạ tầng CTCK thật -> ưu tiên nhất).
+      vnstock = tự có multi-source nội bộ (VCI/TCBS/MSN) -> coi như 1 lớp fallback sẵn.
+      cafef = scrape HTML, giòn, chỉ chạm tới khi cả 2 nguồn trên đều lỗi.
+
+  financial_statements_live:
+    # BCTC quý mới nhất cho Tầng 1, chạy khi có công bố mới (event-driven, tần suất thấp).
+    chain: [vnstock, cafef, vietstock]
+    fiin_datafeed:
+      enabled: false
+      note: >
+        API trả phí cấp tổ chức (datafeed.fiingroup.vn) — chỉ bật nếu nhóm xin được
+        academic access; đừng đặt tiến độ phụ thuộc vào nguồn này.
+
+  financial_statements_backtest:
+    # BCTC lịch sử để chạy walk-forward backtest — KHÔNG dùng cho pipeline sống, vì dữ
+    # liệu là snapshot tĩnh, không đảm bảo có quý mới nhất.
+    primary: vnfinancialdata
+    point_in_time_verified: false  # xem docs/DATA_AUDIT.md mục 4b — phải xác nhận có
+                                    # cột ngày công bố thực (filed_at) chứ không chỉ
+                                    # period-end trước khi dùng cho backtest, nếu không
+                                    # sẽ vi phạm point-in-time discipline (mục 7.1)
+
+  reference_only:
+    # KHÔNG gọi tự động trong pipeline (không đủ tài liệu API để tin cậy) — chỉ dùng
+    # thủ công để đối chiếu chéo khi nghi ngờ số liệu từ nguồn khác.
+    sources: [quantvn]
+
 fundamental_filter:
   growth: { enabled: true, tier: P0 }
   quality: { enabled: true, tier: P0 }
@@ -31,6 +69,24 @@ backtest:
   walk_forward:
     train_years: 3
     test_months: 6
+  metrics:
+    # CORE (luôn tính, đã ghi vào backtest_results ngay từ đầu): cagr, sharpe,
+    # max_drawdown, win_rate, n_trades — không cần cờ bật/tắt vì bắt buộc.
+    turnover: { enabled: true, tier: P0 }
+    sortino: { enabled: true, tier: P0 }
+    calmar: { enabled: true, tier: P0 }
+    profit_factor: { enabled: true, tier: P0 }
+    max_drawdown_days: { enabled: true, tier: P0 }
+    cvar95_calibration: { enabled: false, tier: P1 }   # so dự báo CVaR95 (bảng signals) với thực tế
+    regime_conditional_sharpe: { enabled: false, tier: P1 }  # sharpe_bull_regime/sharpe_bear_regime
+
+sector_classification:
+  # Hạ tầng cho scoring z-score "theo ngành" ở mục 10 — xem store/schema.sql:sector_mapping.
+  enabled: true
+  tier: P0
+  source: vnstock   # field phân ngành ICB có sẵn, không cần tự xây taxonomy
+  refresh_cadence: "monthly"   # phân ngành hiếm khi đổi, không cần cập nhật theo phiên
+  sector_overview_command: { enabled: false, tier: P1 }  # /sector — tổng quan top-down, không phải core signal
 
 scoring:
   method: "percentile_zscore"   # xem mục 10 tài liệu framework

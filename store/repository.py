@@ -65,3 +65,22 @@ def get_backtest_results(conn: sqlite3.Connection, scope: str, run_id: str | Non
     """Bot dùng hàm này để trả lời /backtest — CHỈ ĐỌC kết quả đã tính sẵn theo lịch
     định kỳ trong backtest_results. `run_id=None` -> lấy lần chạy mới nhất."""
     raise NotImplementedError
+
+
+def upsert_sector_mapping(conn: sqlite3.Connection, mapping_rows: list[dict]) -> None:
+    """Ghi/cập nhật bảng sector_mapping (ticker -> market/sector/industry/subindustry).
+    Chạy định kỳ (vd hàng tháng) từ pipeline/, không phải mỗi lần tính signal — phân
+    ngành không đổi thường xuyên."""
+    raise NotImplementedError
+
+
+def get_sector_for_ticker(conn: sqlite3.Connection, ticker: str) -> dict | None:
+    """fundamental_filter/scoring.py dùng hàm này để biết nhóm peer nào khi tính
+    z-score theo ngành (mục 10) — KHÔNG hardcode danh sách ngành ở nơi khác."""
+    raise NotImplementedError
+
+
+def get_sector_overview(conn: sqlite3.Connection, as_of_date: str) -> list[dict]:
+    """Bot dùng hàm này để trả lời /sector — join sector_mapping với watchlist, trả
+    về số mã PASS/WATCH/FAIL theo từng ngành tại as_of_date. CHỈ ĐỌC."""
+    raise NotImplementedError

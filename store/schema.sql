@@ -66,19 +66,46 @@ CREATE TABLE IF NOT EXISTS subscribers (
 
 -- Kết quả backtest chạy ĐỊNH KỲ (không phải theo mỗi lần người dùng gõ /backtest —
 -- walk-forward trên cả rổ quá tốn để chạy real-time). pipeline/ ghi vào đây, bot/ chỉ đọc.
+-- Cột CORE (P0, luôn tính) + cột ADD-ON (P0 nhưng tính sau nếu thiếu thời gian) + cột
+-- ADVANCED (P1, cần logic so sánh dự báo-vs-thực-tế, không chỉ thống kê mô tả).
 CREATE TABLE IF NOT EXISTS backtest_results (
     run_id              TEXT NOT NULL,      -- vd commit hash hoặc timestamp lần chạy
     run_at              DATETIME NOT NULL,
     scope               TEXT NOT NULL,      -- ticker cụ thể hoặc 'portfolio'
     baseline            TEXT CHECK (baseline IN ('framework','B0_buyhold','B1_ta','B2_canslim')),
+    -- CORE
     cagr                REAL,
     sharpe              REAL,
     max_drawdown        REAL,
     win_rate            REAL,
     n_trades            INTEGER,
     equity_curve_json   TEXT,               -- mảng [{date, equity}] để vẽ chart
+    -- ADD-ON (P0, tính rẻ từ dữ liệu backtest đã có, không cần logic mới)
+    turnover            REAL,               -- % NAV giao dịch trung bình mỗi kỳ -> input thực cho backtest/costs.py
+    sortino             REAL,               -- phạt downside risk riêng, hợp với phân phối lệch
+    calmar              REAL,               -- cagr / abs(max_drawdown), dễ trình bày hơn Sharpe
+    profit_factor       REAL,               -- tổng lãi / tổng lỗ (bổ trợ win_rate, tránh "thắng nhiều nhưng lỗ nặng")
+    max_drawdown_days    INTEGER,           -- số phiên để phục hồi từ đáy drawdown, không chỉ độ sâu
+    -- ADVANCED (P1) — chứng minh giả thuyết cốt lõi của framework, không phải thống kê mô tả
+    cvar95_realized     REAL,               -- CVaR thực tế đo được, đối chiếu với cvar95 dự báo trong bảng signals
+    cvar95_calibration_note TEXT,           -- ghi chú định tính: dự báo có khớp thực tế không, lệch bao nhiêu
+    sharpe_bull_regime  REAL,               -- Sharpe riêng trong các phiên P(bull) cao -> kiểm định giá trị của Regime layer
+    sharpe_bear_regime  REAL,
     PRIMARY KEY (run_id, scope, baseline)
+);
+
+-- Phân loại market/sector/industry/subindustry — hạ tầng bắt buộc cho scoring z-score
+-- "theo ngành" ở mục 10 (chưa từng có bảng riêng dù phương pháp đã giả định nó tồn tại).
+-- Nguồn: field phân ngành có sẵn trong vnstock (theo chuẩn ICB của HOSE/HNX).
+CREATE TABLE IF NOT EXISTS sector_mapping (
+    ticker              TEXT PRIMARY KEY,
+    market              TEXT NOT NULL,      -- vd 'HOSE', 'HNX', 'UPCOM'
+    sector              TEXT NOT NULL,      -- ICB cấp 1, vd 'Tài chính'
+    industry            TEXT NOT NULL,      -- ICB cấp 2/3, vd 'Ngân hàng'
+    subindustry         TEXT,               -- ICB cấp 4, có thể NULL nếu nguồn không chi tiết tới mức này
+    updated_at          DATE NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions (status);
 CREATE INDEX IF NOT EXISTS idx_backtest_scope ON backtest_results (scope, run_at);
+CREATE INDEX IF NOT EXISTS idx_sector_industry ON sector_mapping (sector, industry);
