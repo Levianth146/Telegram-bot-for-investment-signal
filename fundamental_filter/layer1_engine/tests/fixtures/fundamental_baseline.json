@@ -1,0 +1,53 @@
+{
+  "tolerance": 1e-8,
+  "tickers": {
+    "VNM": {
+      "growth_score": 58.5432098765432,
+      "quality_score": 47.03703703703703,
+      "safety_score": 78.18711612284919,
+      "valuation_score": 47.88461538461539,
+      "fundamental_score": 57.9129946052612,
+      "absolute_safety_score": 96.57065900411033,
+      "peer_relative_score": 65.02064964021486,
+      "safety_trend_score": 15.625,
+      "safety_gate_status": "NORMAL",
+      "peer_quality": "LOW",
+      "classification_mode": "ABSOLUTE_FALLBACK",
+      "fundamental_percentile": 0.0,
+      "classification": "WATCH",
+      "classification_reason": "ABSOLUTE_WATCH_RANGE"
+    },
+    "FPT": {
+      "growth_score": 69.08527663465934,
+      "quality_score": 84.86172839506173,
+      "safety_score": 81.89615357038299,
+      "valuation_score": 33.22962962962963,
+      "fundamental_score": 67.26819705743343,
+      "absolute_safety_score": 91.20983084439789,
+      "peer_relative_score": 39.46588693957115,
+      "safety_trend_score": 80.0,
+      "safety_gate_status": "NORMAL",
+      "peer_quality": "LOW",
+      "classification_mode": "ABSOLUTE_FALLBACK",
+      "fundamental_percentile": 100.0,
+      "classification": "WATCH",
+      "classification_reason": "MODULE_FLOOR_NOT_MET"
+    },
+    "VHE": {
+      "growth_score": 88.11728395061728,
+      "quality_score": 60.907407407407405,
+      "safety_score": 33.52946872919661,
+      "valuation_score": null,
+      "fundamental_score": null,
+      "absolute_safety_score": 30.036835911495768,
+      "peer_relative_score": null,
+      "safety_trend_score": 47.5,
+      "safety_gate_status": "HIGH_RISK",
+      "peer_quality": "LOW",
+      "classification_mode": "ABSOLUTE_FALLBACK",
+      "fundamental_percentile": null,
+      "classification": "WATCH",
+      "classification_reason": "INSUFFICIENT_DATA"
+    }
+  }
+}

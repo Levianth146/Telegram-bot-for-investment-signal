@@ -1,0 +1,7 @@
+pandas==2.3.3
+numpy==2.2.6
+httpx==0.28.1
+truststore==0.10.4
+python-dotenv==1.2.3
+vnstock==4.0.8
+vnfinancialdata==0.1.2
