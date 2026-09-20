@@ -2,7 +2,7 @@ import json
 
 import pandas as pd
 
-from fundamental_config import CURATED_PEERS, PEER_SELECTION_CONFIG
+from .fundamental_config import CURATED_PEERS, PEER_SELECTION_CONFIG
 
 
 def _clean_tickers(values, target):

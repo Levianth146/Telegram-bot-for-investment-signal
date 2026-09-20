@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fundamental_engine import score_current_universe, write_run_outputs
+from .fundamental_engine import score_current_universe, write_run_outputs
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -16,6 +16,21 @@ FIXTURE_DIR = BASE_DIR / "tests" / "fixtures"
 BASELINE_FILE = FIXTURE_DIR / "fundamental_baseline.json"
 
 
+def _fixture_csvs_present() -> bool:
+    if not BASELINE_FILE.is_file():
+        return False
+    baseline = json.loads(BASELINE_FILE.read_text(encoding="utf-8"))
+    return all(
+        (FIXTURE_DIR / f"scoring_input_{ticker.lower()}_2021_2025.csv").is_file()
+        for ticker in baseline.get("tickers", {})
+    )
+
+
+@unittest.skipUnless(
+    _fixture_csvs_present(),
+    "Frozen scoring_input_*.csv fixtures not present under tests/fixtures "
+    "(only fundamental_baseline.json was merged)",
+)
 class FundamentalRefactorTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

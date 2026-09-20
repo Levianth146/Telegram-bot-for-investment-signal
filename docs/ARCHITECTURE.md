@@ -75,6 +75,21 @@ Cắt một tầng P1/P2 = set `enabled: false` trong `pipeline/config.yaml`, kh
 | P5 | `bot/`, CI/CD, `pipeline/` |
 | P6 | `fundamental_filter/` (Quality/Safety/Merton DD), `quant_engine/probabilistic/hawkes.py`, `docs/` |
 
+## Point-in-time & BCTC V1
+
+- **Annual BCTC** (không phải quý) qua `data.providers` backtest chain; `filed_at` giả định =
+  period-end 31/12 + `assumed_publication_lag_days` (mặc định **90**) — xem `data/ingest/pit.py`
+  và `docs/DATA_AUDIT.md` §4b.
+- **Historical valuation**: year-end closes + cùng lag → PIT observations cho
+  `calculate_historical_valuation_score`. Thiếu ≥4 obs an toàn → không PASS (WATCH).
+- **Peers**: `store.sector_mapping.industry` (job tháng) ưu tiên; live KBS bổ sung khi thiếu.
+
+## daily_job → subscribers
+
+Sau khi ghi `signals`, `pipeline/daily_job.py` đọc `subscribers` và (nếu `BOT_TOKEN` hợp lệ)
+gửi push. Benchmark (`quant_engine.benchmark`, thường VNINDEX) chỉ dùng cho regime — không
+sinh hàng `signals`.
+
 ## Bảng `signals` (hợp đồng giao diện giữa Tầng 2 và bot)
 
 Xem `store/schema.sql`. Cột bắt buộc: `date, ticker, action, score, p_regime, sigma_hat,

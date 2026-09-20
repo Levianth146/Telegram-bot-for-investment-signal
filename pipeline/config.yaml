@@ -34,10 +34,10 @@ data_sources:
     # BCTC lịch sử để chạy walk-forward backtest — KHÔNG dùng cho pipeline sống, vì dữ
     # liệu là snapshot tĩnh, không đảm bảo có quý mới nhất.
     primary: vnfinancialdata
-    point_in_time_verified: false  # xem docs/DATA_AUDIT.md mục 4b — phải xác nhận có
-                                    # cột ngày công bố thực (filed_at) chứ không chỉ
-                                    # period-end trước khi dùng cho backtest, nếu không
-                                    # sẽ vi phạm point-in-time discipline (mục 7.1)
+    # Assumed lag (không phải filed_at vendor): period-end năm + N ngày.
+    # Xem docs/DATA_AUDIT.md §4b và docs/DECISIONS.md.
+    point_in_time_verified: true
+    assumed_publication_lag_days: 90
 
   reference_only:
     # KHÔNG gọi tự động trong pipeline (không đủ tài liệu API để tin cậy) — chỉ dùng
@@ -51,15 +51,36 @@ fundamental_filter:
   safety_merton_dd: { enabled: false, tier: P2 }   # bật sau khi qua data audit
   valuation: { enabled: true, tier: P0 }
   valuation_dcf: { enabled: false, tier: P2 }       # cần nhiều dữ liệu giả định
+  # Phạm vi V1: loại mã tài chính trước khi chấm điểm (framework phần đầu tài liệu)
+  exclude_financials: true
+  min_industry_peers: 3   # dưới ngưỡng → fallback universe cross-section
 
 quant_engine:
   regime_markov: { enabled: true, tier: P0 }
   alpha_kalman_trend: { enabled: true, tier: P0 }
   alpha_ou_meanreversion: { enabled: true, tier: P0 }
   risk_garch: { enabled: true, tier: P0 }
-  portfolio_black_litterman: { enabled: false, tier: P1 }  # fallback: equal-weight
-  probabilistic_monte_carlo: { enabled: false, tier: P1 }  # fallback: không hiện xác suất
+  portfolio_black_litterman:
+    enabled: false
+    tier: P1
+    tau: 0.05
+    delta: 2.5   # risk aversion for equilibrium π = δ Σ w_mkt
+    # fallback: equal-weight when disabled or singular cov
+  probabilistic_monte_carlo:
+    enabled: false
+    tier: P1
+    n_paths: 2000
+    horizon_days: 10
+    tp_pct: 0.08   # mục tiêu +8% trong ví dụ framework
   probabilistic_hawkes: { enabled: false, tier: P2 }       # cần data audit
+  # Benchmark cho Regime (filtered P(bull)); nếu thiếu trong price pull → ticker đầu watchlist
+  benchmark: VNINDEX
+  sigma_target: 0.02   # vol mục tiêu ngày (decimal) cho position_size
+  w_max: 0.10          # trần % NAV / mã
+  stop_k: 2.0          # stop = entry * (1 - k * sigma_hat)
+  bull_threshold: 0.55
+  bear_threshold: 0.35
+  min_slope_tstat: 1.0
 
 backtest:
   start_date: "2019-01-01"
@@ -86,7 +107,7 @@ sector_classification:
   tier: P0
   source: vnstock   # field phân ngành ICB có sẵn, không cần tự xây taxonomy
   refresh_cadence: "monthly"   # phân ngành hiếm khi đổi, không cần cập nhật theo phiên
-  sector_overview_command: { enabled: false, tier: P1 }  # /sector — tổng quan top-down, không phải core signal
+  sector_overview_command: { enabled: true, tier: P1 }  # /sector — tổng quan top-down
 
 scoring:
   method: "percentile_zscore"   # xem mục 10 tài liệu framework

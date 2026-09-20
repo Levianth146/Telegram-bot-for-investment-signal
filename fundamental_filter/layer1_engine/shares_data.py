@@ -1,6 +1,6 @@
 from datetime import date, datetime
 
-from kbs_company_data import get_kbs_company_data
+from .kbs_company_data import get_kbs_company_data
 
 
 def get_shares_outstanding(ticker, as_of_date=None):

@@ -3,14 +3,14 @@ import math
 import numpy as np
 import pandas as pd
 
-from fundamental_config import (
+from .fundamental_config import (
     ABSOLUTE_SAFETY_WEIGHTS,
     FINAL_SAFETY_WEIGHTS,
     PEER_QUALITY_MULTIPLIERS,
     SAFETY_ANCHORS,
     SAFETY_GATE_THRESHOLDS,
 )
-from scoring_utils import normalize_available_weights
+from .scoring_utils import normalize_available_weights
 
 
 PEER_SAFETY_WEIGHTS = ABSOLUTE_SAFETY_WEIGHTS.copy()

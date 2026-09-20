@@ -1,11 +1,27 @@
-import truststore
+"""Peer group via vnstock KBS + curated overrides.
 
-truststore.inject_into_ssl()
+Network deps are lazy so importing this module does not require truststore.
+"""
 
-from vnstock import Reference
+from __future__ import annotations
 
-from industry_data import get_industry
-from fundamental_config import CURATED_PEERS
+from .fundamental_config import CURATED_PEERS
+from .industry_data import get_industry
+
+_ssl_ready = False
+
+
+def _ensure_ssl() -> None:
+    global _ssl_ready
+    if _ssl_ready:
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+    _ssl_ready = True
 
 
 def get_peer_group(ticker):
@@ -14,6 +30,9 @@ def get_peer_group(ticker):
 
     if industry is None:
         return None
+
+    _ensure_ssl()
+    from vnstock import Reference
 
     try:
         data = Reference().equity.list_by_industry(source="kbs")

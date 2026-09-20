@@ -1,0 +1,126 @@
+"""Job refresh ``store.sector_mapping`` (monthly cadence — config sector_classification).
+
+Pure path accepts prepared mapping rows; live path pulls via ``data.providers``
+sector chain (network).
+"""
+
+from __future__ import annotations
+
+import argparse
+from datetime import date
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+from data.providers import get_sector_provider
+from store import repository
+
+
+def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
+    path = Path(config_path) if config_path else Path("pipeline/config.yaml")
+    with path.open(encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {}
+
+
+def industry_to_mapping_row(
+    ticker: str, info: dict[str, Any] | None, *, updated_at: str
+) -> dict[str, Any] | None:
+    """Normalize provider industry payload → sector_mapping row."""
+    if not info:
+        return None
+    industry = info.get("industry_name") or info.get("industry")
+    if not industry:
+        return None
+    return {
+        "ticker": ticker.strip().upper(),
+        "market": info.get("market") or "VN",
+        # V1: KBS often only has industry_name — reuse as sector until ICB levels land
+        "sector": info.get("sector") or industry,
+        "industry": industry,
+        "subindustry": info.get("sub_industry") or info.get("subindustry"),
+        "updated_at": updated_at,
+    }
+
+
+def run(
+    config: dict,
+    *,
+    tickers: list[str] | None = None,
+    mapping_rows: list[dict] | None = None,
+    db_path: str = "store/bot.db",
+    fetch_live: bool = False,
+    as_of_date: str | None = None,
+) -> dict[str, Any]:
+    """Upsert sector_mapping for tickers (from args, watchlist, or prepared rows)."""
+    sc = config.get("sector_classification") or {}
+    if sc.get("enabled") is False:
+        return {"rows": [], "note": "sector_classification.enabled=false"}
+
+    updated_at = as_of_date or date.today().isoformat()
+    rows = list(mapping_rows or [])
+
+    if not rows:
+        universe = [t.strip().upper() for t in (tickers or []) if t.strip()]
+        if not universe:
+            conn = repository.get_connection(db_path)
+            try:
+                repository.init_schema(conn)
+                universe = repository.get_watchlist(conn)
+            finally:
+                conn.close()
+        if not universe:
+            return {"rows": [], "note": "empty ticker universe"}
+
+        if fetch_live:
+            sector = get_sector_provider(config)
+            for ticker in universe:
+                try:
+                    info = sector.get_industry(ticker)
+                except Exception:  # noqa: BLE001
+                    info = None
+                mapped = industry_to_mapping_row(ticker, info, updated_at=updated_at)
+                if mapped:
+                    rows.append(mapped)
+        else:
+            raise NotImplementedError(
+                "Pass mapping_rows=... or set fetch_live=True (network)."
+            )
+
+    conn = repository.get_connection(db_path)
+    try:
+        repository.init_schema(conn)
+        repository.upsert_sector_mapping(conn, rows)
+    finally:
+        conn.close()
+
+    return {"rows": rows, "note": f"upserted {len(rows)} sector_mapping rows"}
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", default="pipeline/config.yaml")
+    parser.add_argument("--db-path", default="store/bot.db")
+    parser.add_argument("--tickers", default="", help="Comma-separated; default=watchlist")
+    parser.add_argument("--dry-run", action="store_true")
+    args = parser.parse_args()
+    config = load_config(args.config)
+    if args.dry_run:
+        sector = get_sector_provider(config)
+        print("sector_job dry-run OK")
+        print(f"  sector provider: {sector.name}")
+        print(f"  enabled: {(config.get('sector_classification') or {}).get('enabled', True)}")
+        return
+
+    tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+    result = run(
+        config,
+        tickers=tickers or None,
+        db_path=args.db_path,
+        fetch_live=True,
+    )
+    print(result["note"])
+
+
+if __name__ == "__main__":
+    main()

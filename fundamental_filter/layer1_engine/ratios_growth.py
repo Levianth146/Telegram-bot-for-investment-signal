@@ -1,9 +1,14 @@
 import pandas as pd
 
-from financial_data import get_financial_data
-
 
 def revenue_growth_yoy(current, previous):
+    if current is None or previous is None or previous == 0:
+        return None
+    return current / previous - 1
+
+
+def npat_growth_yoy(current, previous):
+    """Framework mục 2.1 — NPAT Growth YoY = NPAT_t / NPAT_t-1 - 1."""
     if current is None or previous is None or previous == 0:
         return None
     return current / previous - 1
@@ -44,6 +49,8 @@ def free_cash_flow(cfo, capex):
 
 
 if __name__ == "__main__":
+    from .financial_data import get_financial_data
+
     years = [2021, 2022, 2023, 2024, 2025]
     financial_data = {year: get_financial_data("VNM", year) for year in years}
     growth_rows = []

@@ -9,6 +9,8 @@ BASE_DIR = Path(__file__).resolve().parent
 CORE_METRICS = {
     "GROWTH": [
         "revenue_growth_yoy",
+        "npat_growth_yoy",
+        "eps_growth_yoy",
         "revenue_cagr_3_year",
         "eps_cagr_3_year",
     ],
@@ -16,6 +18,7 @@ CORE_METRICS = {
         "operating_margin",
         "roe",
         "roic",
+        "cfo_to_npat",
     ],
     "SAFETY": [
         "debt_to_equity",

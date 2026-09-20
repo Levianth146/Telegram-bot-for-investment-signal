@@ -1,12 +1,30 @@
-import truststore
+"""Industry lookup via vnstock KBS.
 
-truststore.inject_into_ssl()
+Network deps are lazy so importing this module does not require truststore.
+"""
 
-from vnstock import Reference
+from __future__ import annotations
+
+_ssl_ready = False
+
+
+def _ensure_ssl() -> None:
+    global _ssl_ready
+    if _ssl_ready:
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+    _ssl_ready = True
 
 
 def get_industry(ticker):
     ticker = ticker.strip().upper()
+    _ensure_ssl()
+    from vnstock import Reference
 
     try:
         data = Reference().equity.list_by_industry(source="kbs")

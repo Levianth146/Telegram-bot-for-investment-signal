@@ -1,17 +1,44 @@
+"""Annual BCTC via vnfinancialdata.
+
+Transitional location: pipeline should call
+``data.providers.get_financial_statement_provider`` instead of importing this
+module directly.
+"""
+
+from __future__ import annotations
+
 import sys
 from datetime import date, datetime
 
-import truststore
-
-truststore.inject_into_ssl()
-
 import pandas as pd
-import vnfinancialdata as vnf
 
-from exchange_data import get_financial_exchange
+from .exchange_data import get_financial_exchange
+
+_ssl_ready = False
 
 
-sys.stdout.reconfigure(encoding="utf-8")
+def _ensure_runtime_deps() -> None:
+    global _ssl_ready
+    if _ssl_ready:
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    _ssl_ready = True
+
+
+def _vnf():
+    _ensure_runtime_deps()
+    import vnfinancialdata as vnf
+
+    return vnf
 
 
 def get_value(df, item_code):
@@ -30,6 +57,7 @@ def get_financial_data(ticker, year):
         return None
 
     financial_exchange = exchange_data["financial_exchange"]
+    vnf = _vnf()
 
     income_statement = vnf.get(
         ticker=ticker,

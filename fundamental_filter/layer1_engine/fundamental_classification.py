@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_config import CLASSIFICATION_CONFIG
+from .fundamental_config import CLASSIFICATION_CONFIG
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -36,7 +36,13 @@ def _as_bool(value):
     return str(value).strip().lower() in {"true", "1", "yes"}
 
 
-def classify_fundamental_universe(universe_df, as_of_date=None):
+def classify_fundamental_universe(universe_df, as_of_date=None, config=None):
+    """Classify current-run universe into PASS/WATCH/FAIL (framework mục 10).
+
+    ``config`` overrides CLASSIFICATION_CONFIG; prefer ``load_scoring_config()``
+    so thresholds stay synced with pipeline/config.yaml.
+    """
+    cfg = config or CLASSIFICATION_CONFIG
     data = universe_df.copy()
     required = {
         "ticker",
@@ -86,14 +92,14 @@ def classify_fundamental_universe(universe_df, as_of_date=None):
             (ranks - 1) / (eligible_count - 1) * 100
         ).clip(0, 100)
 
-    pass_threshold = CLASSIFICATION_CONFIG["pass_percentile"] * 100
-    watch_threshold = CLASSIFICATION_CONFIG["watch_percentile"] * 100
-    absolute_pass_score = CLASSIFICATION_CONFIG["absolute_pass_score"]
-    absolute_watch_score = CLASSIFICATION_CONFIG["absolute_watch_score"]
-    module_floor = CLASSIFICATION_CONFIG["min_module_score_for_pass"]
+    pass_threshold = cfg["pass_percentile"] * 100
+    watch_threshold = cfg["watch_percentile"] * 100
+    absolute_pass_score = cfg["absolute_pass_score"]
+    absolute_watch_score = cfg["absolute_watch_score"]
+    module_floor = cfg["min_module_score_for_pass"]
     classification_mode = (
         "PERCENTILE"
-        if eligible_count >= CLASSIFICATION_CONFIG["min_percentile_universe"]
+        if eligible_count >= cfg["min_percentile_universe"]
         else "ABSOLUTE_FALLBACK"
     )
     classifications = []
@@ -130,6 +136,11 @@ def classify_fundamental_universe(universe_df, as_of_date=None):
             flags.append("INSUFFICIENT_DATA")
         else:
             module_floor_met = all(value >= module_floor for value in module_values)
+            hist_available = True
+            if "historical_valuation_available" in data.columns:
+                hist_available = _as_bool(
+                    getattr(row, "historical_valuation_available", True)
+                )
             if classification_mode == "PERCENTILE":
                 percentile_used = True
                 if pd.isna(row.fundamental_percentile):
@@ -144,9 +155,21 @@ def classify_fundamental_universe(universe_df, as_of_date=None):
                     classification = "WATCH"
                     reason = "SAFETY_HIGH_RISK"
                     flags.append("SAFETY_HIGH_RISK")
-                elif row.fundamental_percentile >= pass_threshold and module_floor_met:
+                elif (
+                    row.fundamental_percentile >= pass_threshold
+                    and module_floor_met
+                    and hist_available
+                ):
                     classification = "PASS"
                     reason = "PASS_THRESHOLDS_MET"
+                elif (
+                    row.fundamental_percentile >= pass_threshold
+                    and module_floor_met
+                    and not hist_available
+                ):
+                    classification = "WATCH"
+                    reason = "HISTORICAL_VALUATION_UNAVAILABLE"
+                    flags.append("HISTORICAL_VALUATION_UNAVAILABLE")
                 elif row.fundamental_percentile >= pass_threshold:
                     classification = "WATCH"
                     reason = "MODULE_FLOOR_NOT_MET"
@@ -161,9 +184,21 @@ def classify_fundamental_universe(universe_df, as_of_date=None):
                 classification = "WATCH"
                 reason = "SAFETY_HIGH_RISK"
                 flags.append("SAFETY_HIGH_RISK")
-            elif row.fundamental_score >= absolute_pass_score and module_floor_met:
+            elif (
+                row.fundamental_score >= absolute_pass_score
+                and module_floor_met
+                and hist_available
+            ):
                 classification = "PASS"
                 reason = "ABSOLUTE_PASS_THRESHOLDS_MET"
+            elif (
+                row.fundamental_score >= absolute_pass_score
+                and module_floor_met
+                and not hist_available
+            ):
+                classification = "WATCH"
+                reason = "HISTORICAL_VALUATION_UNAVAILABLE"
+                flags.append("HISTORICAL_VALUATION_UNAVAILABLE")
             elif row.fundamental_score >= absolute_pass_score:
                 classification = "WATCH"
                 reason = "MODULE_FLOOR_NOT_MET"

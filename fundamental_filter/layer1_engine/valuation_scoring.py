@@ -3,12 +3,12 @@ from datetime import date, datetime
 import numpy as np
 import pandas as pd
 
-from fundamental_config import (
+from .fundamental_config import (
     PEER_QUALITY_MULTIPLIERS,
     VALUATION_COMPONENT_WEIGHTS,
     VALUATION_METRIC_WEIGHTS,
 )
-from scoring_utils import normalize_available_weights, validate_weights
+from .scoring_utils import normalize_available_weights, validate_weights
 
 
 LOWER_IS_BETTER = {"pe", "pb", "ev_to_ebitda"}

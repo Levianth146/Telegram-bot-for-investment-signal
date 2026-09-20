@@ -1,0 +1,97 @@
+"""Tests for bot charts (matplotlib Agg, no Telegram)."""
+
+from __future__ import annotations
+
+from bot.charts import (
+    ChartDataError,
+    render_backtest_equity_curve_chart,
+    render_fundamental_radar_chart,
+    render_monte_carlo_distribution_chart,
+    render_sector_overview_chart,
+)
+from store import repository
+
+
+def test_fundamental_radar(tmp_path):
+    out = tmp_path / "radar.png"
+    path = render_fundamental_radar_chart("VNM", 70, 65, 60, 55, out)
+    assert path.is_file()
+    assert path.stat().st_size > 100
+
+
+def test_monte_carlo_hist(tmp_path):
+    out = tmp_path / "mc.png"
+    path = render_monte_carlo_distribution_chart(
+        "AAA", [0.01, -0.02, 0.05, 0.03, -0.01] * 20, 0.08, 0.05, out
+    )
+    assert path.is_file()
+
+
+def test_radar_missing_raises():
+    try:
+        render_fundamental_radar_chart("X", float("nan"), 1, 1, 1, "x.png")
+        assert False, "expected ChartDataError"
+    except ChartDataError:
+        pass
+
+
+def test_backtest_and_sector_charts(tmp_path):
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    import json
+
+    curve = [{"date": f"2024-01-{i:02d}", "equity": 1.0 + i * 0.01} for i in range(1, 20)]
+    repository.upsert_backtest_results(
+        conn,
+        [
+            {
+                "run_id": "r1",
+                "run_at": "2024-06-01T00:00:00",
+                "scope": "portfolio",
+                "baseline": "framework",
+                "cagr": 0.1,
+                "sharpe": 1.0,
+                "max_drawdown": -0.1,
+                "win_rate": 0.5,
+                "n_trades": 3,
+                "equity_curve_json": json.dumps(curve),
+                "turnover": 0.1,
+                "sortino": 1.1,
+                "calmar": 1.0,
+                "profit_factor": 1.2,
+                "max_drawdown_days": 5,
+                "cvar95_realized": None,
+                "cvar95_calibration_note": None,
+                "sharpe_bull_regime": None,
+                "sharpe_bear_regime": None,
+            }
+        ],
+    )
+    repository.upsert_watchlist(
+        conn,
+        [{"as_of_date": "2024-06-28", "ticker": "VNM", "fundamental_view": "PASS"}],
+    )
+    repository.upsert_sector_mapping(
+        conn,
+        [
+            {
+                "ticker": "VNM",
+                "market": "HOSE",
+                "sector": "Consumer",
+                "industry": "Thực phẩm",
+                "subindustry": None,
+                "updated_at": "2024-01-01",
+            }
+        ],
+    )
+    conn.close()
+
+    eq = render_backtest_equity_curve_chart(
+        "portfolio", "r1", tmp_path / "eq.png", db_path=str(db)
+    )
+    assert eq.is_file()
+    sec = render_sector_overview_chart(
+        "2024-06-28", tmp_path / "sec.png", db_path=str(db)
+    )
+    assert sec.is_file()

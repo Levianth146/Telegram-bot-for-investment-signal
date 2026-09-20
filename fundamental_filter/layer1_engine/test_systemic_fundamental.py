@@ -3,14 +3,14 @@ import unittest
 import numpy as np
 import pandas as pd
 
-import trend_analysis
-from fundamental_config import MODULE_METRIC_WEIGHTS
-from scoring_input import CORE_METRICS
-from fundamental_classification import classify_fundamental_universe
-from metric_score import calculate_metric_scores
-from peer_selector import select_peer_universe
-from scoring_utils import normalize_available_weights
-from valuation_scoring import (
+from . import trend_analysis
+from .fundamental_config import MODULE_METRIC_WEIGHTS
+from .scoring_input import CORE_METRICS
+from .fundamental_classification import classify_fundamental_universe
+from .metric_score import calculate_metric_scores
+from .peer_selector import select_peer_universe
+from .scoring_utils import normalize_available_weights
+from .valuation_scoring import (
     calculate_historical_valuation_score,
     calculate_valuation_components,
     is_point_in_time_observation,
@@ -111,7 +111,13 @@ class HistoricalPercentileExclusionTests(unittest.TestCase):
         self.assertEqual(result["score_reweight_reason"], "diagnostic_only")
 
     def test_b4_growth_raw_metrics_remain_available_to_trend(self):
-        for metric in ("revenue_growth_yoy", "revenue_cagr_3_year", "eps_cagr_3_year"):
+        for metric in (
+            "revenue_growth_yoy",
+            "npat_growth_yoy",
+            "eps_growth_yoy",
+            "revenue_cagr_3_year",
+            "eps_cagr_3_year",
+        ):
             self.assertIn(metric, trend_analysis.HIGHER_IS_BETTER)
 
     def test_b5_safety_and_valuation_do_not_use_historical_percentile(self):
@@ -293,6 +299,17 @@ class ClassificationTests(unittest.TestCase):
         result = self.classify(data)
         self.assertTrue(np.isnan(result.loc["TARGET", "fundamental_percentile"]))
         self.assertEqual(result.loc["PEER01", "classification_universe_size"], 4)
+
+    def test_historical_valuation_unavailable_blocks_pass(self):
+        data = self.small_universe(target_score=70.0, size=5)
+        data["historical_valuation_available"] = True
+        data.loc[data.ticker.eq("TARGET"), "historical_valuation_available"] = False
+        result = self.classify(data)
+        self.assertEqual(result.loc["TARGET", "classification"], "WATCH")
+        self.assertEqual(
+            result.loc["TARGET", "classification_reason"],
+            "HISTORICAL_VALUATION_UNAVAILABLE",
+        )
 
 
 if __name__ == "__main__":

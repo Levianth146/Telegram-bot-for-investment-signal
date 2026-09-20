@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from safety_scoring import calculate_safety_components, get_safety_gate_status
+from .safety_scoring import calculate_safety_components, get_safety_gate_status
 
 
 BASE_DIR = Path(__file__).resolve().parent

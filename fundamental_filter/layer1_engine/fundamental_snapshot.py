@@ -1,16 +1,8 @@
-import io
-from contextlib import redirect_stdout
-
-from financial_data import get_financial_data
-
-
-# Các module hiện tại tự in bảng khi import, nên ẩn phần in đó.
-with redirect_stdout(io.StringIO()):
-    import ratios_growth as growth
-    import ratios_quality as quality
-    import ratios_safety as safety
-
-from ratios_valuation import get_valuation
+from .financial_data import get_financial_data
+from . import ratios_growth as growth
+from . import ratios_quality as quality
+from . import ratios_safety as safety
+from .ratios_valuation import get_valuation
 
 
 def get_data(ticker, year):
@@ -35,6 +27,9 @@ def get_fundamental_snapshot(ticker, year):
     growth_result = {
         "revenue_growth_yoy": growth.revenue_growth_yoy(
             get_value(current, "revenue"), get_value(previous, "revenue")
+        ),
+        "npat_growth_yoy": growth.npat_growth_yoy(
+            get_value(current, "npat_parent"), get_value(previous, "npat_parent")
         ),
         "revenue_cagr_3_year": growth.revenue_cagr_3_year(
             get_value(current, "revenue"),

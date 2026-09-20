@@ -1,9 +1,5 @@
 from datetime import date, datetime
 
-from dnse_price import get_close_price, parse_as_of_date
-from financial_data import get_latest_reported_financial_data
-from shares_data import get_shares_outstanding
-
 
 def calculate_market_cap(price, shares):
     if price is None or shares is None or shares <= 0:
@@ -164,6 +160,10 @@ def _warning_text(*sources):
 
 def get_valuation(ticker, as_of_date=None):
     """Build a live or historical valuation without mixing data vintages."""
+    from .dnse_price import get_close_price, parse_as_of_date
+    from .financial_data import get_latest_reported_financial_data
+    from .shares_data import get_shares_outstanding
+
     ticker = ticker.strip().upper()
     if isinstance(as_of_date, int):
         raise TypeError("as_of_date must be an ISO date, not a financial year")

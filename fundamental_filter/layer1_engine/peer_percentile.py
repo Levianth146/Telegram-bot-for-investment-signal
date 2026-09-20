@@ -4,18 +4,21 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_config import PEER_SELECTION_CONFIG
+from .fundamental_config import PEER_SELECTION_CONFIG
 
 
 BASE_DIR = Path(__file__).resolve().parent
 
 HIGHER_IS_BETTER = [
     "revenue_growth_yoy",
+    "npat_growth_yoy",
+    "eps_growth_yoy",
     "revenue_cagr_3_year",
     "eps_cagr_3_year",
     "operating_margin",
     "roe",
     "roic",
+    "cfo_to_npat",
     "interest_coverage",
     "cfo_to_debt",
     "fcf_yield",

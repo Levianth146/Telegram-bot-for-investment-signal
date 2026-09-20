@@ -1,4 +1,4 @@
-from kbs_company_data import get_kbs_company_data
+from .kbs_company_data import get_kbs_company_data
 
 
 def get_financial_exchange(ticker):

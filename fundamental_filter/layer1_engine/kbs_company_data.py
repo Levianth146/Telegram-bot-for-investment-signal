@@ -1,13 +1,28 @@
-import truststore
+"""KBS company profile via vnstock (shares outstanding).
 
-truststore.inject_into_ssl()
+Network deps are lazy so importing this module does not require truststore.
+"""
+
+from __future__ import annotations
 
 import pandas as pd
-from vnstock import Reference
-
 
 _company_cache = {}
 _request_counts = {}
+_ssl_ready = False
+
+
+def _ensure_ssl() -> None:
+    global _ssl_ready
+    if _ssl_ready:
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+    _ssl_ready = True
 
 
 def get_kbs_company_data(ticker):
@@ -15,6 +30,9 @@ def get_kbs_company_data(ticker):
 
     if ticker in _company_cache:
         return _company_cache[ticker]
+
+    _ensure_ssl()
+    from vnstock import Reference
 
     _request_counts[ticker] = _request_counts.get(ticker, 0) + 1
 

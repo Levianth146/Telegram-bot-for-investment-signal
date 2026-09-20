@@ -1,7 +1,5 @@
 import pandas as pd
 
-from financial_data import get_financial_data
-
 
 def current_ratio(current_assets, current_liabilities):
     if current_assets is None or current_liabilities is None:
@@ -38,24 +36,40 @@ def net_debt(debt, cash):
 
 
 def net_debt_to_ebitda(current_net_debt, ebitda):
-    if current_net_debt is None or ebitda is None or ebitda <= 0:
+    """Net Debt / EBITDA. Non-positive EBITDA: net cash → 0; levered → 99 (gate/score floor)."""
+    if current_net_debt is None or ebitda is None:
         return None
+    if ebitda <= 0:
+        # ponytail: sentinel for scoring anchors; real DD/Merton when P2 enabled
+        return 0.0 if current_net_debt <= 0 else 99.0
     return current_net_debt / ebitda
 
 
 def interest_coverage(ebit, interest_expense):
-    if ebit is None or interest_expense is None or interest_expense <= 0:
+    """EBIT / Interest. Zero/negative interest with positive EBIT → 999 (no burden)."""
+    if ebit is None or interest_expense is None:
         return None
+    if interest_expense <= 0:
+        return 999.0 if ebit > 0 else 0.0
     return ebit / interest_expense
 
 
 def cfo_to_debt(cfo, debt):
-    if cfo is None or debt is None or debt <= 0:
+    """CFO / Debt. Zero debt with positive CFO → 1.0 (top of Safety anchors)."""
+    if cfo is None or debt is None:
         return None
+    if debt <= 0:
+        if cfo > 0:
+            return 1.0
+        if cfo == 0:
+            return 0.0
+        return -0.20
     return cfo / debt
 
 
 if __name__ == "__main__":
+    from .financial_data import get_financial_data
+
     years = [2021, 2022, 2023, 2024, 2025]
     safety_rows = []
 

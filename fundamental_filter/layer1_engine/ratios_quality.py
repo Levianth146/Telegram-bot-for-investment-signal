@@ -1,7 +1,5 @@
 import pandas as pd
 
-from financial_data import get_financial_data
-
 
 def gross_margin(gross_profit, revenue):
     if gross_profit is None or revenue is None or revenue == 0:
@@ -70,6 +68,8 @@ def roic(current_nopat, average_capital):
 
 
 if __name__ == "__main__":
+    from .financial_data import get_financial_data
+
     years = [2021, 2022, 2023, 2024, 2025]
     financial_data = {year: get_financial_data("VNM", year) for year in years}
     roic_data = {}

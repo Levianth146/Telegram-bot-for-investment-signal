@@ -4,12 +4,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_config import (
+from .fundamental_config import (
     GROWTH_QUALITY_COMPONENT_WEIGHTS,
     PEER_QUALITY_MULTIPLIERS,
 )
-from safety_scoring import calculate_absolute_metric_score
-from scoring_utils import normalize_available_weights
+from .safety_scoring import calculate_absolute_metric_score
+from .scoring_utils import normalize_available_weights
 
 
 BASE_DIR = Path(__file__).resolve().parent

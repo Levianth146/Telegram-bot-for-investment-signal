@@ -18,9 +18,9 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from financial_data import get_financial_data, get_latest_reported_financial_data
-from fundamental_config import CLASSIFICATION_CONFIG
-from fundamental_engine import analyze_fundamental_universe
+from .financial_data import get_financial_data, get_latest_reported_financial_data
+from .fundamental_config import CLASSIFICATION_CONFIG
+from .fundamental_engine import analyze_fundamental_universe
 
 
 BASE_DIR = Path(__file__).resolve().parent

@@ -1,3 +1,11 @@
+"""DNSE close prices.
+
+Transitional location: pipeline should call ``data.providers.get_price_provider``
+instead of importing this module directly. Logic will move under ``data/providers/``.
+"""
+
+from __future__ import annotations
+
 import base64
 import hashlib
 import hmac
@@ -7,16 +15,34 @@ import uuid
 from datetime import date, datetime, timedelta, timezone
 from urllib.parse import quote
 
-import httpx
 import pandas as pd
-import truststore
-from dotenv import load_dotenv
-from vnstock import Quote
+
+_ssl_ready = False
+Quote = None  # tests may patch; filled from vnstock on first historical fetch
 
 
-truststore.inject_into_ssl()
-sys.stdout.reconfigure(encoding="utf-8")
-load_dotenv()
+def _ensure_runtime_deps() -> None:
+    """Lazy network/ssl deps so importing this module does not require truststore."""
+    global _ssl_ready
+    if _ssl_ready:
+        return
+    try:
+        import truststore
+
+        truststore.inject_into_ssl()
+    except ImportError:
+        pass
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:  # noqa: BLE001
+        pass
+    _ssl_ready = True
 
 
 def create_headers(api_key, api_secret, path):
@@ -51,6 +77,9 @@ def parse_as_of_date(as_of_date):
 
 
 def get_live_close_price(ticker):
+    _ensure_runtime_deps()
+    import httpx
+
     api_key = os.getenv("DNSE_API_KEY")
     api_secret = os.getenv("DNSE_API_SECRET")
     if not api_key or not api_secret:
@@ -90,11 +119,19 @@ def get_live_close_price(ticker):
 
 
 def get_historical_close_price(ticker, as_of_date):
+    global Quote
+    _ensure_runtime_deps()
+    quote_cls = Quote
+    if quote_cls is None:
+        from vnstock import Quote as quote_cls
+
+        Quote = quote_cls
+
     end_date = parse_as_of_date(as_of_date)
     start_date = end_date - timedelta(days=30)
 
     try:
-        history = Quote(symbol=ticker, source="kbs").history(
+        history = quote_cls(symbol=ticker, source="kbs").history(
             start=start_date.isoformat(),
             end=end_date.isoformat(),
             interval="1D",

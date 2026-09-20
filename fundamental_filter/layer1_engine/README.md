@@ -1,92 +1,100 @@
-# Fintech Stock Bot — Fundamental Layer
+# Fintech Stock Bot — Fundamental Layer engine (`layer1_engine/`)
 
-Fundamental Filter cho cổ phiếu Việt Nam, gồm Growth, Quality, Safety,
-Valuation, Fundamental Score và phân loại PASS/WATCH/FAIL. Quant Layer và
-Telegram delivery là các lớp mở rộng về sau, không thuộc pipeline hiện tại.
+Implementation package behind the public facade in
+`fundamental_filter/{growth,quality,safety,valuation,scoring}.py`.
 
-## Architecture
+**Contract:** read [`../README.md`](../README.md) first (facade vs engine).
+
+Follows the framework: Growth → Quality → Safety → Valuation →
+Fundamental Score → PASS/WATCH/FAIL watchlist (mục 9.2).
+
+## Pure path vs I/O path
+
+| Path | Entry | Network |
+|---|---|---|
+| **Pure (repo contract)** | `score_current_universe`, `classify_fundamental_universe`, `to_store_records`, `load_scoring_config` | No — callers pass prepared DataFrames |
+| **Live / transitional** | `analyze_fundamental_universe` | Yes — DNSE/vnstock still here until `data/` providers land |
+
+CONTRIBUTING: production pipeline must feed the pure path from `data/`.
+The live path is diagnostic / bootstrap only.
+
+## Architecture (repo)
 
 ```text
-Financial + market data
-  -> current-run peer universe
-  -> snapshots and ratios
-  -> peer percentiles + trends
-  -> metric/module/fundamental scores
-  -> safety/data-quality gates
-  -> current-run classification
-  -> final outputs
+data/ (point-in-time BCTC)  --or--  layer1 I/O transitional
+  -> scoring DataFrames
+  -> score_current_universe   # metric / module / fundamental
+  -> classify PASS/WATCH/FAIL # thresholds from pipeline/config.yaml
+  -> to_store_records         # shape for store.fundamental_scores + watchlist
+  -> store/ (via repository; upserts still TODO)
 ```
 
-Pipeline production truyền `DataFrame` giữa các stage. Classification chỉ nhận
-universe của lần chạy hiện tại, không quét CSV của các lần chạy trước.
+Classification thresholds sync with `pipeline/config.yaml`
+(`scoring.pass_percentile` / `scoring.fail_percentile`).
 
-## Financial modules
-
-- **Growth:** tăng trưởng doanh thu, EPS CAGR và CFO.
-- **Quality:** operating margin, ROE và ROIC.
-- **Safety:** absolute strength, peer relative và trend.
-- **Valuation:** P/E, P/B, EV/EBITDA và FCF Yield; historical valuation chỉ
-  được dùng khi point-in-time safe.
-
-## Setup — Windows PowerShell
+## Setup — Windows PowerShell (from repo root)
 
 ```powershell
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-Copy-Item .env.example .env
+# Optional live I/O deps:
+pip install -r fundamental_filter/layer1_engine/requirements.txt
+Copy-Item fundamental_filter/layer1_engine/.env.example fundamental_filter/layer1_engine/.env
 ```
-
-Điền credentials DNSE vào `.env`. Không commit file `.env`.
 
 ## Run
 
-Chạy một current-run universe bằng danh sách ticker phân cách bởi dấu phẩy:
+Prefer package entry (repo root):
 
 ```powershell
-python fundamental_engine.py VNM,FPT,VHE 2021 2025
+python -m fundamental_filter.layer1_engine VNM,FPT,VHE 2021 2025
+python -m fundamental_filter.layer1_engine VNM,FPT,VHE 2021 2025 --debug
 ```
 
-Debug artifacts là opt-in:
+Public formulas (no network):
 
 ```powershell
-python fundamental_engine.py VNM,FPT,VHE 2021 2025 --debug
+python -c "from fundamental_filter import growth; print(growth.revenue_growth_yoy(120, 100))"
 ```
-
-Các CLI stage cũ vẫn tồn tại để diagnostic/backward compatibility, nhưng không
-phải production entry point.
 
 ## Tests
 
+From repo root:
+
 ```powershell
-python -m unittest -v test_fundamental_refactor.py test_systemic_fundamental.py test_safety_scoring.py test_valuation_point_in_time.py
+python -m pytest fundamental_filter/tests -q
+python -m unittest fundamental_filter.layer1_engine.test_safety_scoring `
+  fundamental_filter.layer1_engine.test_systemic_fundamental `
+  fundamental_filter.layer1_engine.test_fundamental_refactor -v
 ```
 
-Regression tests dùng frozen inputs và không gọi network.
+Regression fixtures: `tests/fixtures/fundamental_baseline.json` plus optional
+`scoring_input_*.csv` (refactor suite skips if CSVs were not merged).
+Valuation PIT tests need `fundamental_filter/layer1_engine/requirements.txt`
+deps and run via:
+`python -m unittest fundamental_filter.layer1_engine.test_valuation_point_in_time`.
+
+Regression / systemic / safety tests use frozen inputs and do not call network.
 
 ## Outputs
 
-Production mặc định chỉ ghi:
+Production default CSVs (live/diagnostic runs):
 
-- `outputs/fundamental_results.csv`: một dòng cho mỗi target ticker.
-- `outputs/fundamental_metrics.csv`: metric-level audit.
+- `outputs/fundamental_results.csv`
+- `outputs/fundamental_metrics.csv`
 
-`debug=False` không tạo intermediate CSV. Khi bật debug, artifacts chỉ nằm
-trong `outputs/debug/<run_id>/`; mỗi run có thư mục riêng. Production outputs
-không cần commit vì có thể tái tạo từ current-run inputs.
+Store-shaped records (for pipeline):
+
+```python
+from fundamental_filter.layer1_engine import to_store_records
+records = to_store_records(results_df)
+# records["fundamental_scores"], records["watchlist"]
+```
 
 ## Data limitations
 
-- Nguồn company/industry hiện tại có thể không cung cấp sub-industry, khiến
-  peer selector phải dùng industry fallback với quality thấp.
-- Publication date và historical shares chưa đầy đủ cho nhiều ticker.
-- Historical valuation không được fabricate; component này được đánh dấu
-  unavailable khi không point-in-time safe.
-- API/data vendor availability vẫn ảnh hưởng một live run, nhưng regression
-  suite không phụ thuộc network.
-
-## Reproducibility
-
-Ticker universe được truyền trực tiếp vào canonical engine. Old CSV artifacts
-không được scan hoặc đưa vào classification. Cùng frozen input tạo cùng score,
-gate và classification trong tolerance `1e-8`.
+- Sub-industry may be missing → peer selector industry fallback.
+- Publication date / historical shares incomplete for many tickers.
+- Historical valuation never fabricated; marked unavailable when not PIT-safe.
+- Network vendors affect live runs only; pure-path tests do not.

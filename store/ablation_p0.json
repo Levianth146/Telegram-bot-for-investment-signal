@@ -1,0 +1,74 @@
+{
+  "start_date": "2021-01-01",
+  "end_date": "2024-12-31",
+  "tickers": [
+    "VNM",
+    "FPT"
+  ],
+  "loaded": [
+    "FPT",
+    "VNINDEX",
+    "VNM"
+  ],
+  "layers_order": [
+    "B0_buyhold",
+    "fundamental",
+    "regime",
+    "alpha",
+    "risk"
+  ],
+  "sharpe_keep_delta": 0.1,
+  "steps": [
+    {
+      "layer": "B0_buyhold",
+      "cagr": 0.18457352587656461,
+      "sharpe": 0.9166179807572257,
+      "max_drawdown": -0.17553815569871012,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": null,
+      "decision": "baseline"
+    },
+    {
+      "layer": "fundamental",
+      "cagr": 0.18457352587656461,
+      "sharpe": 0.9166179807572257,
+      "max_drawdown": -0.17553815569871012,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": 0.0,
+      "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
+    },
+    {
+      "layer": "regime",
+      "cagr": -0.002316356966666211,
+      "sharpe": -0.6976711367248797,
+      "max_drawdown": -0.009751808460976896,
+      "win_rate": 0.0,
+      "n_trades": 2,
+      "delta_sharpe": -1.6142891174821052,
+      "decision": "cut from main / keep appendix (dSharpe=-1.614 < +0.10)"
+    },
+    {
+      "layer": "alpha",
+      "cagr": -0.002316356966666211,
+      "sharpe": -0.6976711367248797,
+      "max_drawdown": -0.009751808460976896,
+      "win_rate": 0.0,
+      "n_trades": 2,
+      "delta_sharpe": 0.0,
+      "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
+    },
+    {
+      "layer": "risk",
+      "cagr": -0.002316356966666211,
+      "sharpe": -0.6976711367248797,
+      "max_drawdown": -0.009751808460976896,
+      "win_rate": 0.0,
+      "n_trades": 2,
+      "delta_sharpe": 0.0,
+      "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
+    }
+  ],
+  "note": "P0 stack only; MC/BL forced off in ablation. Do not flip pipeline defaults until P1 ablation has numbers."
+}

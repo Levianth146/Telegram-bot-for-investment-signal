@@ -3,13 +3,13 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from dnse_price import get_close_price
-from ratios_valuation import (
+from .dnse_price import get_close_price
+from .ratios_valuation import (
     aggregate_ttm,
     get_valuation,
     select_latest_published_financial,
 )
-from shares_data import get_shares_outstanding
+from .shares_data import get_shares_outstanding
 
 
 class ValuationPointInTimeTests(unittest.TestCase):
@@ -34,8 +34,13 @@ class ValuationPointInTimeTests(unittest.TestCase):
             }
         )
         with (
-            patch("dnse_price.Quote", return_value=quote),
-            patch("dnse_price.get_live_close_price") as live_price_mock,
+            patch(
+                "fundamental_filter.layer1_engine.dnse_price.Quote",
+                return_value=quote,
+            ),
+            patch(
+                "fundamental_filter.layer1_engine.dnse_price.get_live_close_price"
+            ) as live_price_mock,
         ):
             result = get_close_price(
                 "VNM", "2024-06-30", return_metadata=True
@@ -62,9 +67,13 @@ class ValuationPointInTimeTests(unittest.TestCase):
             records[0],
         )
 
-    @patch("ratios_valuation.get_latest_reported_financial_data")
-    @patch("ratios_valuation.get_shares_outstanding")
-    @patch("ratios_valuation.get_close_price")
+    @patch(
+        "fundamental_filter.layer1_engine.financial_data.get_latest_reported_financial_data"
+    )
+    @patch(
+        "fundamental_filter.layer1_engine.shares_data.get_shares_outstanding"
+    )
+    @patch("fundamental_filter.layer1_engine.dnse_price.get_close_price")
     def test_c_live_valuation_uses_live_price_and_latest_reported_basis(
         self, price_mock, shares_mock, financial_mock
     ):
@@ -135,9 +144,13 @@ class ValuationPointInTimeTests(unittest.TestCase):
         self.assertEqual(result["fcf"], 8)
         self.assertEqual(result["earnings_basis"], "TTM")
 
-    @patch("ratios_valuation.get_latest_reported_financial_data")
-    @patch("ratios_valuation.get_shares_outstanding")
-    @patch("ratios_valuation.get_close_price")
+    @patch(
+        "fundamental_filter.layer1_engine.financial_data.get_latest_reported_financial_data"
+    )
+    @patch(
+        "fundamental_filter.layer1_engine.shares_data.get_shares_outstanding"
+    )
+    @patch("fundamental_filter.layer1_engine.dnse_price.get_close_price")
     def test_e_fy_fallback_is_explicit_and_does_not_crash(
         self, price_mock, shares_mock, financial_mock
     ):
@@ -172,7 +185,7 @@ class ValuationPointInTimeTests(unittest.TestCase):
         self.assertFalse(result["point_in_time_safe"])
         self.assertIsNotNone(result["pe"])
 
-    @patch("shares_data.get_kbs_company_data")
+    @patch("fundamental_filter.layer1_engine.shares_data.get_kbs_company_data")
     def test_f_historical_shares_never_fall_back_to_current(self, company_mock):
         result = get_shares_outstanding("VNM", "2024-06-30")
 

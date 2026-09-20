@@ -4,9 +4,9 @@ from pathlib import Path
 
 import pandas as pd
 
-from peer_coverage import check_peer_coverage
-from peer_group import get_peer_group
-from peer_selector import select_peer_universe
+from .peer_coverage import check_peer_coverage
+from .peer_group import get_peer_group
+from .peer_selector import select_peer_universe
 
 
 BASE_DIR = Path(__file__).resolve().parent

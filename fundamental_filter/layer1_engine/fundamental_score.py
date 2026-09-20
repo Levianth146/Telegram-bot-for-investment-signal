@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_config import FUNDAMENTAL_MODULE_WEIGHTS
+from .fundamental_config import FUNDAMENTAL_MODULE_WEIGHTS
 
 
 BASE_DIR = Path(__file__).resolve().parent

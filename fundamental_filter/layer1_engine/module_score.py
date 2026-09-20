@@ -6,14 +6,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_config import MODULE_METRIC_WEIGHTS
-from safety_scoring import (
+from .fundamental_config import MODULE_METRIC_WEIGHTS
+from .safety_scoring import (
     ABSOLUTE_SAFETY_WEIGHTS,
     calculate_safety_components,
     get_safety_gate_status,
     validate_safety_weights,
 )
-from valuation_scoring import (
+from .valuation_scoring import (
     calculate_peer_valuation_score,
     calculate_valuation_components,
 )

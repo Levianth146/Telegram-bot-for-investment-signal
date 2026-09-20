@@ -1,9 +1,9 @@
 import pandas as pd
 
-from dnse_price import get_close_price
-from exchange_data import get_financial_exchange
-from financial_data import get_financial_data
-from shares_data import get_shares_outstanding
+from .dnse_price import get_close_price
+from .exchange_data import get_financial_exchange
+from .financial_data import get_financial_data
+from .shares_data import get_shares_outstanding
 
 
 def get_error_message(error):

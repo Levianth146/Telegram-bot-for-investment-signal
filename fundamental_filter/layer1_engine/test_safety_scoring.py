@@ -3,8 +3,8 @@ import unittest
 import numpy as np
 import pandas as pd
 
-from metric_score import calculate_metric_scores
-from safety_scoring import (
+from .metric_score import calculate_metric_scores
+from .safety_scoring import (
     ABSOLUTE_SAFETY_WEIGHTS,
     FINAL_SAFETY_WEIGHTS,
     calculate_absolute_metric_score,
@@ -155,6 +155,15 @@ class SafetyScoringTests(unittest.TestCase):
             "cfo_to_debt": 0.2,
         }
         self.assertEqual(get_safety_gate_status(high_risk, 100), "HIGH_RISK")
+        # Levered + non-positive EBITDA sentinel (99) trips ND/EBITDA high-risk alone
+        # when combined with another condition — here D/E also high.
+        levered_bad_ebitda = {
+            "debt_to_equity": 2.1,
+            "net_debt_to_ebitda": 99.0,
+            "interest_coverage": 5.0,
+            "cfo_to_debt": 0.5,
+        }
+        self.assertEqual(get_safety_gate_status(levered_bad_ebitda, 100), "HIGH_RISK")
 
     def test_missing_input_is_not_filled_or_renormalized(self):
         raw = {**self.safe_raw, "cfo_to_debt": np.nan}

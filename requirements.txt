@@ -1,3 +1,7 @@
+matplotlib>=3.8
+truststore>=0.10
+vnstock>=3.0
+vnfinancialdata>=0.1
 pandas>=2.0
 numpy>=1.26
 scipy>=1.11

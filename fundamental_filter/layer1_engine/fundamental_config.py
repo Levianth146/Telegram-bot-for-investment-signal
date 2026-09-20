@@ -74,12 +74,20 @@ SAFETY_GATE_THRESHOLDS = {
 }
 
 MODULE_METRIC_WEIGHTS = {
+    # CURRENT YoY share weight; CAGR carries sustainability (anti double-count)
     "GROWTH": {
-        "revenue_growth_yoy": 1 / 6,
-        "revenue_cagr_3_year": 1 / 3,
-        "eps_cagr_3_year": 1 / 2,
+        "revenue_growth_yoy": 0.15,
+        "npat_growth_yoy": 0.15,
+        "eps_growth_yoy": 0.15,
+        "revenue_cagr_3_year": 0.20,
+        "eps_cagr_3_year": 0.35,
     },
-    "QUALITY": {"operating_margin": 0.25, "roe": 0.30, "roic": 0.45},
+    "QUALITY": {
+        "operating_margin": 0.20,
+        "roe": 0.25,
+        "roic": 0.35,
+        "cfo_to_npat": 0.20,  # Cash Conversion (mục 3.4)
+    },
     "SAFETY": ABSOLUTE_SAFETY_WEIGHTS.copy(),
     "VALUATION": VALUATION_METRIC_WEIGHTS.copy(),
 }

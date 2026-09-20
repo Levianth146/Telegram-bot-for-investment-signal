@@ -5,17 +5,12 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from fundamental_classification import classify_fundamental_universe
-from fundamental_score import run_fundamental_score
-from historical_fundamental import get_historical_fundamental
-from metric_score import run_metric_score
-from module_score import run_module_score
-from peer_coverage_runner import run_peer_coverage
-from peer_percentile import run_peer_percentile
-from peer_snapshot_runner import run_peer_snapshot
-from scoring_input import CORE_METRICS, build_scoring_input
-from trend_analysis import run_trend_analysis
-from trend_score import run_trend_score
+from .config_loader import load_scoring_config
+from .fundamental_classification import classify_fundamental_universe
+from .fundamental_score import run_fundamental_score
+from .metric_score import run_metric_score
+from .module_score import run_module_score
+from .scoring_input import CORE_METRICS
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -52,11 +47,17 @@ def _empty_historical_percentiles(ticker, year):
     )
 
 
-def score_current_universe(scoring_frames, start_year, end_year):
-    """Score and classify only the explicitly supplied current-run universe."""
+def score_current_universe(scoring_frames, start_year, end_year, config=None):
+    """Score and classify only the explicitly supplied current-run universe.
+
+    Pure path: no network. ``scoring_frames`` must already be prepared by
+    ``data/`` (or transitional layer1 I/O). Classification thresholds come from
+    ``load_scoring_config()`` unless ``config`` is passed explicitly.
+    """
     metric_frames = []
     score_frames = []
     stage_results = {}
+    scoring_config = config if config is not None else load_scoring_config()
 
     for ticker, scoring_df in scoring_frames.items():
         target = ticker.strip().upper()
@@ -79,7 +80,9 @@ def score_current_universe(scoring_frames, start_year, end_year):
         }
 
     score_universe = pd.concat(score_frames, ignore_index=True)
-    classification = classify_fundamental_universe(score_universe)
+    classification = classify_fundamental_universe(
+        score_universe, config=scoring_config
+    )
     results = score_universe.merge(
         classification[
             [
@@ -145,7 +148,20 @@ def analyze_fundamental_universe(
     output_dir=None,
     sleep_seconds=4,
 ):
-    """Run the Fundamental Layer in memory for an explicit ticker universe."""
+    """Run the Fundamental Layer in memory for an explicit ticker universe.
+
+    Transitional live path — pulls peers/prices via network helpers still
+    housed in this package. Prefer preparing DataFrames in ``data/`` and
+    calling ``score_current_universe`` in production.
+    """
+    from .historical_fundamental import get_historical_fundamental
+    from .peer_coverage_runner import run_peer_coverage
+    from .peer_percentile import run_peer_percentile
+    from .peer_snapshot_runner import run_peer_snapshot
+    from .scoring_input import build_scoring_input
+    from .trend_analysis import run_trend_analysis
+    from .trend_score import run_trend_score
+
     targets = _normalize_tickers(tickers)
     if start_year > end_year:
         raise ValueError("start_year must be less than or equal to end_year")

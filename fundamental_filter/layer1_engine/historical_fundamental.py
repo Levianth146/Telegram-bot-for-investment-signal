@@ -3,10 +3,10 @@ from pathlib import Path
 
 import pandas as pd
 
-from financial_data import get_financial_data
-import ratios_growth as growth
-import ratios_quality as quality
-import ratios_safety as safety
+from .financial_data import get_financial_data
+from . import ratios_growth as growth
+from . import ratios_quality as quality
+from . import ratios_safety as safety
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -15,6 +15,7 @@ COLUMNS = [
     "ticker",
     "year",
     "revenue_growth_yoy",
+    "npat_growth_yoy",
     "revenue_cagr_3_year",
     "eps_growth_yoy",
     "eps_cagr_3_year",
@@ -112,6 +113,10 @@ def get_historical_fundamental(ticker, start_year, end_year, persist=True):
                 "revenue_growth_yoy": growth.revenue_growth_yoy(
                     get_value(current, "revenue"),
                     get_value(previous, "revenue"),
+                ),
+                "npat_growth_yoy": growth.npat_growth_yoy(
+                    get_value(current, "npat_parent"),
+                    get_value(previous, "npat_parent"),
                 ),
                 "revenue_cagr_3_year": growth.revenue_cagr_3_year(
                     get_value(current, "revenue"),

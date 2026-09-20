@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from fundamental_snapshot import get_fundamental_snapshot
+from .fundamental_snapshot import get_fundamental_snapshot
 
 
 SLEEP_SECONDS = 4
@@ -14,6 +14,7 @@ COLUMNS = [
     "ticker",
     "year",
     "revenue_growth_yoy",
+    "npat_growth_yoy",
     "revenue_cagr_3_year",
     "eps_growth_yoy",
     "eps_cagr_3_year",
