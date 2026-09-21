@@ -334,7 +334,7 @@ def upsert_sector_mapping(conn: sqlite3.Connection, mapping_rows: list[dict]) ->
         rows.append(
             {
                 "ticker": str(row["ticker"]).strip().upper(),
-                "market": row.get("market") or "VN",
+                "market": row.get("market") or None,
                 "sector": row.get("sector") or row.get("industry") or "UNKNOWN",
                 "industry": row.get("industry") or "UNKNOWN",
                 "subindustry": row.get("subindustry"),

@@ -32,9 +32,15 @@ def industry_to_mapping_row(
     industry = info.get("industry_name") or info.get("industry")
     if not industry:
         return None
+    from data.universe import normalize_exchange
+
+    market = normalize_exchange(
+        info.get("market") or info.get("exchange") or info.get("board")
+    )
     return {
         "ticker": ticker.strip().upper(),
-        "market": info.get("market") or "VN",
+        # Chỉ ghi HOSE/HNX/UPCOM khi nhận diện được — tránh "VN" mơ hồ
+        "market": market or None,
         # V1: KBS often only has industry_name — reuse as sector until ICB levels land
         "sector": info.get("sector") or industry,
         "industry": industry,
@@ -73,12 +79,28 @@ def run(
             return {"rows": [], "note": "empty ticker universe"}
 
         if fetch_live:
+            from data.universe.exchanges import (
+                enrich_industry_info_with_exchange,
+                load_symbol_exchange_map,
+            )
+
+            exchange_map = load_symbol_exchange_map()
             sector = get_sector_provider(config)
             for ticker in universe:
                 try:
                     info = sector.get_industry(ticker)
                 except Exception:  # noqa: BLE001
                     info = None
+                info = enrich_industry_info_with_exchange(
+                    ticker, info, exchange_map=exchange_map
+                )
+                # Industry thiếu nhưng đã biết sàn → vẫn ghi market để filter exchange
+                if info is None and ticker in exchange_map:
+                    info = {
+                        "industry_name": "UNKNOWN",
+                        "market": exchange_map[ticker],
+                        "exchange": exchange_map[ticker],
+                    }
                 mapped = industry_to_mapping_row(ticker, info, updated_at=updated_at)
                 if mapped:
                     rows.append(mapped)

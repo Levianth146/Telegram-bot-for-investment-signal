@@ -52,6 +52,7 @@ số khác) — điền ngày chốt: __________
 | 2026-09-21 | Ops live path: `scripts/run_daily_pipeline.py` + `.env` `BOT_TOKEN`; getMe OK; daily push **sent=1** (1 subscriber) | Token chỉ local; MC/BL vẫn `enabled: false` |
 | 2026-09-21 | Bot UX: `/signals` chú thích regime chung + hiện score/σ̂; `/start` hướng dẫn; p_bull/size đồng nhất = thiết kế P0 (không bug) | Equal-weight + regime VNINDEX; MC/BL vẫn off |
 | 2026-09-21 | Universe V1 = **HOSE + HNX only** (`universe.allowed_exchanges`); UPCOM out of scope — filter qua `sector_mapping.market` | Không crawl/score UPCOM; unmapped/`VN` giữ nếu CSV curated |
+| 2026-09-21 | `sector_job` chuẩn hoá `market` via vnstock `Listing.symbols_by_exchange` + `normalize_exchange`; không ghi `VN` mơ hồ | Phục vụ filter `allowed_exchanges`; lịch daily: `scripts/run_daily_pipeline.ps1` |
 
 ## Log thực tế của nhóm
 

@@ -97,6 +97,12 @@ sinh hàng `signals`.
 3. `python -m bot.main` — polling; user `/subscribe` trước khi kỳ vọng push > 0.
 4. Bot chỉ đọc `store/`; không crawl vendor trong handlers.
 
+### Lịch daily (Windows)
+
+- Script: `scripts/run_daily_pipeline.ps1` → gọi `scripts/run_daily_pipeline.py`.
+- Đăng ký Task Scheduler mẫu (T2–T6 15:15): xem README mục “Lịch Windows”.
+- Không thay thế bot polling; push chỉ gửi khi có subscriber + `BOT_TOKEN`.
+
 ## Bảng `signals` (hợp đồng giao diện giữa Tầng 2 và bot)
 
 Xem `store/schema.sql`. Cột bắt buộc: `date, ticker, action, score, p_regime, sigma_hat,

@@ -55,6 +55,18 @@ python -m bot.main                   # Khởi động bot (chỉ đọc store/)
 4. Bot polling: `python -m bot.main` (không `--dry-run`). Trong Telegram: `/start` → `/subscribe` → `/signals`.
 5. Chạy lại `run_daily_pipeline` sau khi subscribe để nhận push.
 
+### Lịch Windows (sau đóng cửa)
+
+```powershell
+# Một lần thủ công (không push Telegram):
+.\scripts\run_daily_pipeline.ps1 -NoPush
+
+# Đăng ký Task Scheduler (chỉnh path repo cho khớp máy bạn):
+schtasks /Create /TN "VNSignalDaily" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 15:15 /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\Projects\Telegram-bot-for-investment-signal\scripts\run_daily_pipeline.ps1" /F
+```
+
+Bot polling (`python -m bot.main`) chạy riêng nếu muốn nhận tin ngay khi daily xong.
+
 ## Backtest
 
 ```bash
