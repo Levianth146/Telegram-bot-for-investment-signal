@@ -103,6 +103,33 @@ def test_backtest_and_sector_charts(tmp_path):
         conn,
         [{"as_of_date": "2024-06-28", "ticker": "VNM", "fundamental_view": "PASS"}],
     )
+    repository.upsert_fundamental_scores(
+        conn,
+        [
+            {
+                "ticker": "VNM",
+                "filed_at": "2024-06-28",
+                "period": "2023",
+                "growth_score": 70,
+                "quality_score": 65,
+                "safety_score": 60,
+                "valuation_score": 55,
+                "fundamental_view": "PASS",
+                "headline_json": "{}",
+            },
+            {
+                "ticker": "ZZZ",
+                "filed_at": "2024-06-28",
+                "period": "2023",
+                "growth_score": 10,
+                "quality_score": 10,
+                "safety_score": 10,
+                "valuation_score": 10,
+                "fundamental_view": "FAIL",
+                "headline_json": "{}",
+            },
+        ],
+    )
     repository.upsert_sector_mapping(
         conn,
         [
@@ -113,7 +140,15 @@ def test_backtest_and_sector_charts(tmp_path):
                 "industry": "Thực phẩm",
                 "subindustry": None,
                 "updated_at": "2024-01-01",
-            }
+            },
+            {
+                "ticker": "ZZZ",
+                "market": "HOSE",
+                "sector": "Consumer",
+                "industry": "Thực phẩm",
+                "subindustry": None,
+                "updated_at": "2024-01-01",
+            },
         ],
     )
     conn.close()

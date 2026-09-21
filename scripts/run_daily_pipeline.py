@@ -42,6 +42,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Chạy sector_job (fetch_live) trước daily",
     )
     parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=0,
+        help="Tích signals N phiên từ price_bars (không bịa số, không fetch)",
+    )
+    parser.add_argument(
         "--no-push",
         action="store_true",
         help="Persist signals nhưng không gửi Telegram",
@@ -63,6 +69,20 @@ def main(argv: list[str] | None = None) -> int:
             as_of_date=args.as_of_date,
         )
         print(f"sector: {sector_result.get('note')}")
+
+    if args.backfill_days and args.backfill_days > 0:
+        bf = daily_job.backfill_from_store(
+            config,
+            db_path=db_path,
+            days=args.backfill_days,
+            push=False,
+        )
+        print(bf.get("note") or "backfill done")
+        print(
+            f"signals days: {bf.get('signals_upserted_days')}/"
+            f"{len(bf.get('dates') or [])}"
+        )
+        return 0
 
     result = daily_job.run(
         config,

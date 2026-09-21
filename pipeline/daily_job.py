@@ -231,6 +231,7 @@ def run(
     close_by_ticker: dict | None = None,
     persist: bool = True,
     push: bool = True,
+    sync_paper: bool = True,
 ) -> dict[str, Any]:
     """Load watchlist, prepare prices, generate signals, optionally persist + push."""
     signal_date = as_of_date or date.today().isoformat()
@@ -294,22 +295,23 @@ def run(
             if signals:
                 repository.upsert_signals(conn, signals)
                 chat_ids = repository.get_active_subscribers(conn)
-                # Paper positions from last close (no model fit)
-                entry_prices = {}
-                for ticker, close in (series or {}).items():
-                    if close is None or len(close) == 0:
-                        continue
-                    try:
-                        entry_prices[str(ticker).upper()] = float(
-                            pd_to_last_close(close)
-                        )
-                    except (TypeError, ValueError):
-                        continue
-                from pipeline.paper_positions import sync_positions_from_signals
+                if sync_paper:
+                    # Paper positions from last close (no model fit)
+                    entry_prices = {}
+                    for ticker, close in (series or {}).items():
+                        if close is None or len(close) == 0:
+                            continue
+                        try:
+                            entry_prices[str(ticker).upper()] = float(
+                                pd_to_last_close(close)
+                            )
+                        except (TypeError, ValueError):
+                            continue
+                    from pipeline.paper_positions import sync_positions_from_signals
 
-                paper_result = sync_positions_from_signals(
-                    conn, signals, entry_price_by_ticker=entry_prices
-                )
+                    paper_result = sync_positions_from_signals(
+                        conn, signals, entry_price_by_ticker=entry_prices
+                    )
             else:
                 chat_ids = []
         finally:
@@ -332,6 +334,116 @@ def run(
     }
 
 
+def _closes_from_store(
+    conn,
+    tickers: list[str],
+    *,
+    as_of: str,
+    lookback_days: int = 800,
+) -> dict:
+    """Đọc close đã có trong ``price_bars`` tới ``as_of`` — không bịa giá."""
+    import pandas as pd
+
+    out: dict = {}
+    for ticker in tickers:
+        rows = repository.get_price_closes(
+            conn, ticker, limit_days=lookback_days
+        )
+        if not rows:
+            continue
+        pairs = [
+            (str(r["date"])[:10], float(r["close"]))
+            for r in rows
+            if r.get("close") is not None and str(r["date"])[:10] <= as_of
+        ]
+        if not pairs:
+            continue
+        out[str(ticker).upper()] = pd.Series(
+            {d: c for d, c in pairs}, dtype=float
+        ).sort_index()
+    return out
+
+
+def backfill_from_store(
+    config: dict,
+    *,
+    db_path: str = "store/bot.db",
+    days: int = 20,
+    push: bool = False,
+) -> dict[str, Any]:
+    """Tích lũy ``signals`` nhiều phiên từ ``price_bars`` thật (PIT theo ngày).
+
+    Không bịa số: mỗi phiên gọi lại ``generate_signals`` trên chuỗi close ≤ ngày đó.
+    Dùng khi store mới chỉ có 1 ngày signal nhưng đã có lịch sử giá.
+    """
+    days = max(1, int(days))
+    universe = load_watchlist_tickers(db_path, config=config)
+    if not universe:
+        return {
+            "days_requested": days,
+            "dates": [],
+            "signals_upserted_days": 0,
+            "note": "empty watchlist — run quarterly_job first",
+        }
+
+    qcfg = config.get("quant_engine") or {}
+    benchmark = (qcfg.get("benchmark") or "").strip().upper() or None
+    needed = list(universe)
+    if benchmark and benchmark not in needed:
+        needed.append(benchmark)
+
+    conn = repository.get_connection(db_path)
+    try:
+        repository.init_schema(conn)
+        cur = conn.execute(
+            """
+            SELECT DISTINCT date AS d
+            FROM price_bars
+            WHERE ticker IN ({})
+            ORDER BY date DESC
+            LIMIT ?
+            """.format(",".join("?" for _ in universe)),
+            (*universe, days),
+        )
+        dates = sorted(str(r["d"])[:10] for r in cur.fetchall())
+    finally:
+        conn.close()
+
+    done: list[str] = []
+    for day in dates:
+        conn = repository.get_connection(db_path)
+        try:
+            series = _closes_from_store(conn, needed, as_of=day)
+        finally:
+            conn.close()
+        if len(series) < 2:
+            continue
+        result = run(
+            config,
+            db_path=db_path,
+            as_of_date=day,
+            tickers=universe,
+            fetch_prices=False,
+            close_by_ticker=series,
+            persist=True,
+            push=False,
+            sync_paper=False,
+        )
+        if result.get("signals"):
+            done.append(day)
+
+    return {
+        "days_requested": days,
+        "dates": dates,
+        "signals_upserted_days": len(done),
+        "done_dates": done,
+        "note": (
+            f"backfill {len(done)}/{len(dates)} phiên từ price_bars "
+            f"(không fetch mạng, không bịa số)"
+        ),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true")
@@ -339,6 +451,13 @@ def main() -> None:
     parser.add_argument("--db-path", default="store/bot.db")
     parser.add_argument("--as-of-date", default=None)
     parser.add_argument("--no-persist", action="store_true")
+    parser.add_argument(
+        "--backfill-days",
+        type=int,
+        default=0,
+        help="Tích signals từ price_bars N phiên gần nhất (không bịa số)",
+    )
+    parser.add_argument("--no-push", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
     if args.dry_run:
@@ -353,12 +472,24 @@ def main() -> None:
             print(f"  sample: {', '.join(tickers[:5])}")
         return
 
+    if args.backfill_days and args.backfill_days > 0:
+        bf = backfill_from_store(
+            config,
+            db_path=args.db_path,
+            days=args.backfill_days,
+            push=not args.no_push,
+        )
+        print(bf["note"])
+        print(f"dates: {bf.get('signals_upserted_days')}/{len(bf.get('dates') or [])}")
+        return
+
     result = run(
         config,
         db_path=args.db_path,
         as_of_date=args.as_of_date,
         fetch_prices=True,
         persist=not args.no_persist,
+        push=not args.no_push,
     )
     print(result["note"])
     print(f"tickers: {len(result['tickers'])}")

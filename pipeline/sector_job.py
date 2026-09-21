@@ -23,6 +23,54 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
         return yaml.safe_load(handle) or {}
 
 
+def load_sector_overrides(
+    path: str | Path | None = None,
+) -> dict[str, dict[str, Any]]:
+    """Đọc ``data/universe/sector_overrides.csv`` — ưu tiên hơn nhãn provider UNKNOWN."""
+    import csv
+
+    csv_path = Path(path) if path else Path("data/universe/sector_overrides.csv")
+    if not csv_path.is_file():
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    with csv_path.open(encoding="utf-8", newline="") as handle:
+        for row in csv.DictReader(handle):
+            ticker = str(row.get("ticker") or "").strip().upper()
+            if not ticker:
+                continue
+            out[ticker] = {
+                "ticker": ticker,
+                "market": (row.get("market") or "").strip() or None,
+                "sector": (row.get("sector") or row.get("industry") or "UNKNOWN").strip(),
+                "industry": (row.get("industry") or "UNKNOWN").strip(),
+                "subindustry": (row.get("subindustry") or "").strip() or None,
+            }
+    return out
+
+
+def apply_sector_overrides(
+    rows: list[dict[str, Any]],
+    *,
+    updated_at: str,
+    overrides: dict[str, dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """Ghi đè / bổ sung ngành từ CSV overrides (tránh UNKNOWN lâu dài)."""
+    ov = overrides if overrides is not None else load_sector_overrides()
+    if not ov:
+        return rows
+    by_ticker = {str(r.get("ticker", "")).upper(): dict(r) for r in rows}
+    for ticker, info in ov.items():
+        by_ticker[ticker] = {
+            "ticker": ticker,
+            "market": info.get("market"),
+            "sector": info.get("sector") or "UNKNOWN",
+            "industry": info.get("industry") or "UNKNOWN",
+            "subindustry": info.get("subindustry"),
+            "updated_at": updated_at,
+        }
+    return list(by_ticker.values())
+
+
 def industry_to_mapping_row(
     ticker: str, info: dict[str, Any] | None, *, updated_at: str
 ) -> dict[str, Any] | None:
@@ -112,6 +160,7 @@ def run(
     conn = repository.get_connection(db_path)
     try:
         repository.init_schema(conn)
+        rows = apply_sector_overrides(rows, updated_at=updated_at)
         repository.upsert_sector_mapping(conn, rows)
     finally:
         conn.close()

@@ -138,3 +138,48 @@ MC/BL defaults vẫn `enabled: false`.
 - UX: banner khuyến nghị, header sàn/ngành, CTA `/chart`; khối TA reference từ `price_bars` (RSI/MA/Vol) — **chỉ hiển thị**, không vào score/size.
 - Quarterly `hose_liquid_35` 2021–2024 → watchlist **22** (PASS 7 / WATCH 15); daily: **22** signals, OHLCV **23/23 missing=0%**, `price_bars` 23 mã.
 - MC/BL vẫn `enabled: false`.
+
+### Ablation watchlist 12 mã + walk-forward (2026-09-22)
+
+- Universe subset 12 mã: FPT,VNM,GAS,MWG,REE,PNJ,PLX,GVR,VHM,VHC,DCM,SAB; 2021–2024; `signal_every=42`; CLI `scripts/run_ablation_quiet.py --walk-forward`; JSON `store/ablation_watchlist12_wf.json`.
+
+| Ngày | Tầng / OOS | Kết quả | Quyết định | Người chốt |
+|---|---|---|---|---|
+| 2026-09-22 | B0 buy&hold 12 mã | Sharpe **0.66** / CAGR 0.13 | Baseline | auto |
+| 2026-09-22 | +fundamental PIT | Sharpe **0.70** (Δ **+0.043**) | Cắt ngưỡng trên sample này (< +0.10) | auto |
+| 2026-09-22 | +regime (alpha off) | 0 trades; Sharpe null | Pending — alpha off → WATCH-only (đúng thiết kế tách layer) | auto |
+| 2026-09-22 | +alpha | Sharpe **−0.92** (Δ **−1.62** vs fundamental); n_trades=**23** (dày hơn sample 4–6 mã) | Cắt khỏi bản chính | auto |
+| 2026-09-22 | +risk GARCH | Sharpe **−0.94** (Δ **−0.028** vs alpha); cùng 23 trades | Cắt — không đạt ngưỡng giữ | auto |
+| 2026-09-22 | WF OOS 2 folds 2024 | Sharpe OOS **0.80** / CAGR 0.029 / n_trades=**3** | OOS vẫn mỏng (< dày hơn 1-trade cũ nhưng chưa đủ) — **không** flip MC/BL (cần ΔSharpe OOS ≥ +0.10 và sample dày hơn) | auto |
+
+MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
+
+### Bot UX plain-VI + /chart ta (2026-09-22)
+
+- UX: `/start` vs `/help` tách riêng; banner/CTA tiếng Việt rõ hơn trên `/signals` `/check` `/watchlist` `/status` `/regime`; PASS/WATCH có gloss; hiển thị giá đóng cửa gần nhất + ghi chú thiếu dữ liệu (`insufficient_price_history`) theo framework 11.4.
+- `/chart <mã> ta` mở từ `price_bars` (display-only) — risk/prob vẫn deferred (thiếu sigma history / MC off).
+- MC/BL vẫn `enabled: false` (WF watchlist12: n_trades=3, gate chưa đạt).
+
+### Audit E2E + sửa /sector FAIL + /backtest ablation UX (2026-09-22)
+
+- Audit: pipeline Tier1/Tier2 P0 khớp framework; lệch chính là UX (`/sector` FAIL luôn 0 vì join watchlist; `/backtest` nhãn dễ hiểu nhầm là NAV live).
+- `/sector`: đếm PASS/WATCH/FAIL từ `fundamental_scores` (PIT `filed_at`), ghi chú as_of quý.
+- `/backtest`: copy «Ablation nghiên cứu · không phải NAV live»; persist `equity_curve_json` từ ablation/WF; gắn PNG equity + drawdown khi có curve.
+- `/check` khối ①: đọc nhẹ `headline_json` (ghi chú lọc / phân vị).
+- `/chart risk`: dải rolling từ `price_bars` (+ annotate σ̂ GARCH phiên gần nhất nếu có); `prob` vẫn tắt (MC off).
+- Doc: ARCHITECTURE trỏ đúng `.docx` ở repo root. MC/BL vẫn `enabled: false`.
+
+### Wire thêm metrics/charts tầng 2 từ schema + charts.py (2026-09-22)
+
+- Metrics ADD-ON trên `/backtest` luôn hiện (Sortino/Calmar/turnover/profit factor/DD days); persist từ `compute_metrics` khi ablation ghi store.
+- Charts: `/backtest` thêm rolling Sharpe + regime-equity + PnL histogram (khi có data); `/sector` gửi PNG overview; `/chart price` dùng nền regime nếu có lịch sử `p_regime`; `/chart risk` ưu tiên GARCH từ lịch sử `signals.sigma_hat` (≥5 phiên), không thì rolling; `/chart prob` đọc `mc_outcomes` trong `reason_json` nếu có.
+- `/check`: hiện slot MC/CVaR dù null; OU half-life / regime_method khi có trong `reason_json`.
+- Vẫn không flip MC/BL; Kalman level history chưa có trong store → chưa vẽ đường Kalman trên price chart.
+
+### UX plain + ngành + tích lũy data tầng 2 (2026-09-22)
+
+- Ngành: `data/universe/sector_overrides.csv` + `sector_job.apply_sector_overrides` — sửa UNKNOWN (DIG/DXG/KDH/POW/VIC) và VRE → Bán lẻ TTTM.
+- UX: `/check` `/watchlist` `/backtest` `/sector` `/positions` dùng tiếng Việt ngắn, ngày `dd/mm/yyyy`, giải thích rõ ngày lọc báo cáo ≠ ngày phiên.
+- Tầng 2 đủ data **không bịa số**: (1) chạy `daily_job` đều → `signals` tích `p_regime`/`sigma_hat` theo ngày; (2) ghi `kalman_level_last` vào `reason_json`; (3) chart GARCH/regime chỉ bật khi ≥5 phiên lịch sử; (4) MC/CVaR outcomes chỉ khi bật flag + OOS đạt gate.
+- Catch-up: `python -m pipeline.daily_job --backfill-days 20 --no-push` (hoặc `scripts/run_daily_pipeline.py --backfill-days 20`) — tính lại từ `price_bars` đã có, không sync paper, không bịa số.
+- MC/BL vẫn `enabled: false`.

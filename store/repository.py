@@ -70,6 +70,57 @@ def get_latest_signals(conn: sqlite3.Connection, as_of_date: str | None = None) 
     return [dict(r) for r in cur.fetchall()]
 
 
+def get_signal_history(
+    conn: sqlite3.Connection,
+    ticker: str,
+    *,
+    limit_days: int = 500,
+) -> list[dict]:
+    """Lịch sử ``signals`` theo mã — cho chart regime / GARCH (bot chỉ đọc)."""
+    cur = conn.execute(
+        """
+        SELECT date, ticker, action, score, p_regime, sigma_hat,
+               stop, size, p_tp_before_sl, cvar95, reason_json
+        FROM signals
+        WHERE ticker = ?
+        ORDER BY date DESC
+        LIMIT ?
+        """,
+        (str(ticker).strip().upper(), int(limit_days)),
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+    rows.reverse()
+    return rows
+
+
+def get_market_regime_history(
+    conn: sqlite3.Connection, *, limit_days: int = 500
+) -> list[dict]:
+    """Chuỗi P(bull) theo ngày — median trên các mã có ``p_regime`` (cho chart backtest)."""
+    cur = conn.execute(
+        """
+        SELECT date, p_regime
+        FROM signals
+        WHERE p_regime IS NOT NULL
+        ORDER BY date
+        """
+    )
+    by_date: dict[str, list[float]] = {}
+    for row in cur.fetchall():
+        day = str(row["date"])
+        by_date.setdefault(day, []).append(float(row["p_regime"]))
+    days = sorted(by_date)
+    if limit_days > 0:
+        days = days[-int(limit_days) :]
+    out: list[dict] = []
+    for day in days:
+        vals = by_date[day]
+        vals_sorted = sorted(vals)
+        mid = vals_sorted[len(vals_sorted) // 2]
+        out.append({"date": day, "p_bull": mid})
+    return out
+
+
 def get_latest_fundamental_scores(
     conn: sqlite3.Connection, tickers: list[str] | None = None
 ) -> dict[str, dict]:
@@ -383,26 +434,61 @@ def get_markets_for_tickers(
     return result
 
 
-def get_sector_overview(conn: sqlite3.Connection, as_of_date: str) -> list[dict]:
-    """Bot dùng hàm này để trả lời /sector — join sector_mapping với watchlist, trả
-    về số mã PASS/WATCH/FAIL theo từng ngành tại as_of_date. CHỈ ĐỌC."""
+def get_sector_overview(
+    conn: sqlite3.Connection, as_of_date: str | None = None
+) -> list[dict]:
+    """Bot /sector — đếm PASS/WATCH/FAIL theo ngành từ ``fundamental_scores``.
+
+    Dùng ``filed_at`` (PIT quý), KHÔNG dùng ngày tín hiệu phiên. Watchlist chỉ
+    chứa PASS/WATCH nên không đủ để đếm FAIL (ARCHITECTURE mục lệnh /sector).
+
+    ``as_of_date=None`` → ưu tiên ``MAX(watchlist.as_of_date)``, không có thì
+    ``MAX(fundamental_scores.filed_at)``.
+    """
+    if as_of_date is None:
+        row = conn.execute("SELECT MAX(as_of_date) AS d FROM watchlist").fetchone()
+        if row is None or row["d"] is None:
+            row = conn.execute(
+                "SELECT MAX(filed_at) AS d FROM fundamental_scores"
+            ).fetchone()
+        if row is None or row["d"] is None:
+            return []
+        as_of_date = row["d"]
+    # Điểm mới nhất mỗi mã với filed_at <= as_of (PIT), rồi gom theo ngành.
     cur = conn.execute(
         """
         SELECT
             COALESCE(s.industry, 'UNKNOWN') AS industry,
-            SUM(CASE WHEN w.fundamental_view = 'PASS' THEN 1 ELSE 0 END) AS n_pass,
-            SUM(CASE WHEN w.fundamental_view = 'WATCH' THEN 1 ELSE 0 END) AS n_watch,
-            SUM(CASE WHEN w.fundamental_view = 'FAIL' THEN 1 ELSE 0 END) AS n_fail,
+            SUM(CASE WHEN f.fundamental_view = 'PASS' THEN 1 ELSE 0 END) AS n_pass,
+            SUM(CASE WHEN f.fundamental_view = 'WATCH' THEN 1 ELSE 0 END) AS n_watch,
+            SUM(CASE WHEN f.fundamental_view = 'FAIL' THEN 1 ELSE 0 END) AS n_fail,
             COUNT(*) AS n_total
-        FROM watchlist w
-        LEFT JOIN sector_mapping s ON s.ticker = w.ticker
-        WHERE w.as_of_date = ?
+        FROM fundamental_scores f
+        INNER JOIN (
+            SELECT ticker, MAX(filed_at) AS max_filed
+            FROM fundamental_scores
+            WHERE filed_at <= ?
+            GROUP BY ticker
+        ) latest
+          ON f.ticker = latest.ticker AND f.filed_at = latest.max_filed
+        LEFT JOIN sector_mapping s ON s.ticker = f.ticker
         GROUP BY COALESCE(s.industry, 'UNKNOWN')
         ORDER BY n_total DESC, industry
         """,
         (as_of_date,),
     )
     return [dict(r) for r in cur.fetchall()]
+
+
+def list_backtest_scopes(conn: sqlite3.Connection) -> list[str]:
+    """Danh sách scope có trong backtest_results (cho CTA /backtest khi sai scope)."""
+    cur = conn.execute(
+        """
+        SELECT DISTINCT scope FROM backtest_results
+        ORDER BY scope
+        """
+    )
+    return [str(r["scope"]) for r in cur.fetchall()]
 
 
 def get_watchlist_rows(

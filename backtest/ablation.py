@@ -260,6 +260,8 @@ def run_ablation(
                 "win_rate": m.get("win_rate"),
                 "n_trades": m.get("n_trades"),
                 "metrics": m,
+                # Giữ curve để persist store → bot /backtest vẽ equity/DD.
+                "equity_curve": list(result.get("equity_curve") or []),
             }
         )
 
@@ -405,6 +407,152 @@ def _json_safe(value: Any) -> Any:
     return value
 
 
+_VALID_BASELINES = frozenset({"framework", "B0_buyhold", "B1_ta", "B2_canslim"})
+
+
+def _equity_curve_json(source: Mapping[str, Any] | None) -> str | None:
+    """Serialize ``equity_curve`` list → JSON text cho ``backtest_results``."""
+    if not source:
+        return None
+    curve = source.get("equity_curve")
+    if not isinstance(curve, list) or not curve:
+        return None
+    try:
+        return json.dumps(curve, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
+def _metrics_from_step(step: Mapping[str, Any]) -> dict:
+    """CORE + ADD-ON từ bước ablation / metrics dict lồng nhau."""
+    nested = step.get("metrics") if isinstance(step.get("metrics"), Mapping) else {}
+    src = {**dict(nested), **dict(step)}
+    keys = (
+        "cagr",
+        "sharpe",
+        "max_drawdown",
+        "win_rate",
+        "n_trades",
+        "turnover",
+        "sortino",
+        "calmar",
+        "profit_factor",
+        "max_drawdown_days",
+        "cvar95_realized",
+        "cvar95_calibration_note",
+        "sharpe_bull_regime",
+        "sharpe_bear_regime",
+    )
+    return {k: _json_safe(src.get(k)) for k in keys}
+
+
+def ablation_payload_to_store_rows(
+    payload: Mapping[str, Any],
+    *,
+    run_id: str | None = None,
+    run_at: str | None = None,
+    scope: str = "portfolio",
+) -> list[dict]:
+    """Map ablation JSON → rows cho ``store.backtest_results``.
+
+    Chỉ ghi baseline hợp lệ schema: B0_buyhold + framework (walk-forward hoặc
+    bước stack cuối có số liệu). Các tầng ablation trung gian giữ trong JSON.
+    """
+    from datetime import datetime, timezone
+
+    rid = run_id or f"ablation_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}"
+    rat = run_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    rows: list[dict] = []
+
+    steps = list(payload.get("steps") or [])
+    by_layer = {str(s.get("layer")): s for s in steps if isinstance(s, dict)}
+
+    b0 = by_layer.get("B0_buyhold")
+    if b0:
+        rows.append(
+            {
+                "run_id": rid,
+                "run_at": rat,
+                "scope": scope,
+                "baseline": "B0_buyhold",
+                **_metrics_from_step(b0),
+                "equity_curve_json": _equity_curve_json(b0),
+            }
+        )
+
+    fw: Mapping[str, Any] | None = None
+    wf = payload.get("walk_forward")
+    if isinstance(wf, dict) and (
+        wf.get("sharpe") is not None or wf.get("cagr") is not None
+    ):
+        fw = wf
+    else:
+        for layer in ("risk", "alpha", "regime", "fundamental"):
+            step = by_layer.get(layer)
+            if step and (
+                step.get("sharpe") is not None or step.get("n_trades")
+            ):
+                fw = step
+                break
+
+    if fw:
+        rows.append(
+            {
+                "run_id": rid,
+                "run_at": rat,
+                "scope": scope,
+                "baseline": "framework",
+                **_metrics_from_step(fw),
+                "equity_curve_json": _equity_curve_json(fw),
+            }
+        )
+
+    # Lọc an toàn — tránh vi phạm CHECK baseline
+    return [r for r in rows if r.get("baseline") in _VALID_BASELINES]
+
+
+def persist_ablation_to_store(
+    payload: Mapping[str, Any],
+    *,
+    db_path: str = "store/bot.db",
+    run_id: str | None = None,
+    scope: str = "portfolio",
+) -> dict[str, Any]:
+    """Ghi kết quả ablation vào ``backtest_results`` để bot /backtest đọc được."""
+    from store import repository
+
+    rows = ablation_payload_to_store_rows(payload, run_id=run_id, scope=scope)
+    if not rows:
+        return {"rows": 0, "note": "no persistable baselines in payload"}
+    conn = repository.get_connection(db_path)
+    try:
+        repository.init_schema(conn)
+        repository.upsert_backtest_results(conn, rows)
+    finally:
+        conn.close()
+    return {
+        "rows": len(rows),
+        "run_id": rows[0]["run_id"],
+        "baselines": [r["baseline"] for r in rows],
+        "note": f"upserted {len(rows)} backtest_results rows",
+    }
+
+
+def persist_ablation_json(
+    json_path: str | Path,
+    *,
+    db_path: str = "store/bot.db",
+    scope: str = "portfolio",
+) -> dict[str, Any]:
+    """Đọc file ablation JSON đã có → ghi store (dùng lại artifact cũ)."""
+    path = Path(json_path)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    run_id = path.stem
+    return persist_ablation_to_store(
+        payload, db_path=db_path, run_id=run_id, scope=scope
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description="Ablation P0 stack (B0->fundamental->regime->alpha->risk)"
@@ -452,7 +600,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--db-path",
         default="store/bot.db",
-        help="SQLite path for sector_mapping (default: store/bot.db)",
+        help="SQLite path for sector_mapping + backtest_results (default: store/bot.db)",
+    )
+    parser.add_argument(
+        "--no-persist-store",
+        action="store_true",
+        help="Không ghi backtest_results (mặc định: có ghi để /backtest đọc được)",
     )
     parser.add_argument(
         "--walk-forward",
@@ -535,6 +688,7 @@ def main(argv: list[str] | None = None) -> int:
             "sharpe": _json_safe(wm.get("sharpe")),
             "max_drawdown": _json_safe(wm.get("max_drawdown")),
             "n_trades": wm.get("n_trades"),
+            "equity_curve": list(wf.get("equity_curve") or []),
             "folds": [
                 {
                     "test_start": f.get("test_start"),
@@ -574,6 +728,7 @@ def main(argv: list[str] | None = None) -> int:
                 "n_trades": s.get("n_trades"),
                 "delta_sharpe": _json_safe(s.get("delta_sharpe")),
                 "decision": s.get("decision"),
+                "equity_curve": list(s.get("equity_curve") or []),
             }
             for s in steps
         ],
@@ -588,6 +743,14 @@ def main(argv: list[str] | None = None) -> int:
         encoding="utf-8",
     )
     print(f"wrote {out_path}", flush=True)
+    if not args.no_persist_store:
+        persisted = persist_ablation_to_store(
+            payload,
+            db_path=args.db_path,
+            run_id=out_path.stem,
+            scope="portfolio",
+        )
+        print(f"store: {persisted.get('note')}", flush=True)
     try:
         print(format_steps_table(steps), flush=True)
     except UnicodeEncodeError:

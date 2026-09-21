@@ -81,3 +81,71 @@ def test_daily_job_run_with_synthetic_closes(tmp_path):
     assert len(stored) == 2
     assert {r["ticker"] for r in stored} == {"AAA", "BBB"}
     assert len(closes_aaa) >= 2
+
+
+def test_backfill_from_store_uses_price_bars(tmp_path):
+    """Backfill tính lại từ giá đã lưu — không bịa sigma/p_regime."""
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    repository.upsert_watchlist(
+        conn,
+        [
+            {"as_of_date": "2024-06-28", "ticker": "AAA", "fundamental_view": "PASS"},
+        ],
+    )
+    repository.upsert_fundamental_scores(
+        conn,
+        [
+            {
+                "ticker": "AAA",
+                "filed_at": "2024-03-31",
+                "period": "2023",
+                "growth_score": 70.0,
+                "quality_score": 65.0,
+                "safety_score": 60.0,
+                "valuation_score": 55.0,
+                "fundamental_view": "PASS",
+                "headline_json": "{}",
+            }
+        ],
+    )
+    # Seed 40 phiên giá (AAA + VNINDEX)
+    bars = []
+    for name, seed in (("AAA", 1), ("VNINDEX", 3)):
+        s = _close(n=40, seed=seed)
+        for day, val in s.items():
+            bars.append(
+                {
+                    "ticker": name,
+                    "date": str(day)[:10],
+                    "open": float(val),
+                    "high": float(val),
+                    "low": float(val),
+                    "close": float(val),
+                    "volume": 1_000,
+                }
+            )
+    repository.upsert_price_bars(conn, bars)
+    conn.close()
+
+    cfg = {
+        "quant_engine": {
+            "regime_markov": {"enabled": True},
+            "alpha_kalman_trend": {"enabled": True},
+            "alpha_ou_meanreversion": {"enabled": False},
+            "risk_garch": {"enabled": True},
+            "portfolio_black_litterman": {"enabled": False},
+            "benchmark": "VNINDEX",
+            "sigma_target": 0.02,
+            "w_max": 0.1,
+        }
+    }
+    bf = daily_job.backfill_from_store(cfg, db_path=str(db), days=5, push=False)
+    assert bf["signals_upserted_days"] >= 3
+    conn = repository.get_connection(str(db))
+    n_dates = conn.execute("SELECT COUNT(DISTINCT date) AS n FROM signals").fetchone()[
+        "n"
+    ]
+    conn.close()
+    assert n_dates >= 3

@@ -1,9 +1,9 @@
 # Kiến trúc tổng thể — Telegram Bot Tín hiệu Đầu tư
 
 Tài liệu này tóm tắt kiến trúc kỹ thuật ứng với "Khung chiến lược tích hợp: Fundamental
-Filter + Quant Regime Engine" mà nhóm đã thống nhất. Đọc file `.docx` đầy đủ (lưu trong
-`docs/khung_chien_luoc_tich_hop.docx`) để hiểu lý thuyết/công thức chi tiết; file này chỉ
-ánh xạ lý thuyết đó sang code.
+Filter + Quant Regime Engine" mà nhóm đã thống nhất. Đọc file `.docx` đầy đủ (lưu tại
+repo root: `Khung_chien_luoc_tich_hop-Fundamental_Filter-Quant_Regime_Engine.docx`) để
+hiểu lý thuyết/công thức chi tiết; file này chỉ ánh xạ lý thuyết đó sang code.
 
 ## Sơ đồ luồng dữ liệu
 

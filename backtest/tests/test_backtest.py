@@ -331,9 +331,65 @@ def test_upsert_backtest_results(tmp_path):
         ],
     )
     rows = repository.get_backtest_results(conn, "portfolio")
+    assert repository.list_backtest_scopes(conn) == ["portfolio"]
     conn.close()
     assert len(rows) == 1
     assert rows[0]["run_id"] == "test_run"
+
+
+def test_ablation_persist_to_store(tmp_path):
+    from backtest.ablation import persist_ablation_to_store
+
+    db = tmp_path / "bot.db"
+    curve_b0 = [
+        {"date": "2021-01-04", "equity": 1.0},
+        {"date": "2021-06-01", "equity": 1.05},
+        {"date": "2021-12-31", "equity": 1.12},
+    ]
+    curve_wf = [
+        {"date": "2024-01-02", "equity": 1.0},
+        {"date": "2024-06-28", "equity": 1.02},
+        {"date": "2024-12-31", "equity": 1.03},
+    ]
+    payload = {
+        "steps": [
+            {
+                "layer": "B0_buyhold",
+                "cagr": 0.12,
+                "sharpe": 0.65,
+                "max_drawdown": -0.3,
+                "win_rate": None,
+                "n_trades": 0,
+                "equity_curve": curve_b0,
+            },
+            {
+                "layer": "risk",
+                "cagr": -0.02,
+                "sharpe": -0.9,
+                "max_drawdown": -0.08,
+                "win_rate": 0.13,
+                "n_trades": 23,
+            },
+        ],
+        "walk_forward": {
+            "cagr": 0.03,
+            "sharpe": 0.8,
+            "max_drawdown": -0.02,
+            "n_trades": 3,
+            "equity_curve": curve_wf,
+        },
+    }
+    out = persist_ablation_to_store(
+        payload, db_path=str(db), run_id="ablation_test", scope="portfolio"
+    )
+    assert out["rows"] == 2
+    conn = repository.get_connection(str(db))
+    rows = {r["baseline"]: r for r in repository.get_backtest_results(conn, "portfolio")}
+    conn.close()
+    assert "B0_buyhold" in rows and "framework" in rows
+    assert json.loads(rows["B0_buyhold"]["equity_curve_json"])[0]["equity"] == 1.0
+    assert json.loads(rows["framework"]["equity_curve_json"])[-1]["equity"] == 1.03
+    assert abs(float(rows["framework"]["sharpe"]) - 0.8) < 1e-9
 
 
 def test_sharpe_unit():

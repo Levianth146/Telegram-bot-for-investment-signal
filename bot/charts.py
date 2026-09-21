@@ -151,6 +151,74 @@ def render_garch_risk_band_chart(
     return _save(fig, out)
 
 
+def render_realized_vol_band_chart(
+    ticker: str,
+    price_history: list[dict],
+    out_path: str | Path,
+    *,
+    window: int = 20,
+    latest_sigma_hat: float | None = None,
+) -> Path:
+    """Dải ±2σ từ biến động thực tế (rolling) — khi chưa có lịch sử GARCH trong store.
+
+    Không thay thế GARCH forecast; dùng cho /chart risk V1 khi chỉ có price_bars.
+    """
+    if len(price_history) < max(window + 2, 30):
+        raise ChartDataError(
+            f"Chưa đủ lịch sử giá để vẽ risk cho {ticker} "
+            f"(cần ≥{max(window + 2, 30)} phiên)."
+        )
+    out = _ensure_out(out_path)
+    _dates, prices = _dates_values(price_history, "close")
+    px = np.asarray(prices, dtype=float)
+    rets = np.diff(np.log(px))
+    # Rolling std of returns → band around price
+    upper: list[float] = [float("nan")]
+    lower: list[float] = [float("nan")]
+    for i in range(1, len(px)):
+        start = max(0, i - window)
+        window_rets = rets[start:i]
+        if len(window_rets) < 5:
+            upper.append(float("nan"))
+            lower.append(float("nan"))
+            continue
+        sig = float(np.std(window_rets, ddof=1))
+        upper.append(px[i] * (1.0 + 2.0 * sig))
+        lower.append(px[i] * (1.0 - 2.0 * sig))
+
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    x = range(len(px))
+    ax.plot(x, px, color="#1f4e79", lw=1.3, label="Giá đóng cửa")
+    ax.fill_between(
+        x, lower, upper, color="#5b9bd5", alpha=0.25, label=f"±2σ rolling {window}đ"
+    )
+    if latest_sigma_hat is not None and latest_sigma_hat > 0:
+        last = float(px[-1])
+        ax.axhline(
+            last * (1.0 + 2.0 * float(latest_sigma_hat)),
+            color="#ed7d31",
+            ls="--",
+            lw=1.0,
+            label="GARCH σ̂ phiên gần nhất (±2)",
+        )
+        ax.axhline(
+            last * (1.0 - 2.0 * float(latest_sigma_hat)),
+            color="#ed7d31",
+            ls="--",
+            lw=1.0,
+        )
+    ax.set_title(f"{ticker} — Biến động thực tế (rolling)")
+    ax.legend(loc="best", fontsize=8)
+    fig.text(
+        0.5,
+        0.01,
+        "Tham khảo — dải rolling từ giá; σ̂ GARCH đầy đủ khi có lịch sử store",
+        ha="center",
+        fontsize=8,
+    )
+    return _save(fig, out)
+
+
 def render_monte_carlo_distribution_chart(
     ticker: str,
     mc_outcomes: list[float],
@@ -221,10 +289,10 @@ def render_ta_reference_chart(
     ema = ta_indicators.get("ema_20") or ta_indicators.get("ema")
     if isinstance(ema, list) and ema:
         ax_p.plot(range(min(len(ema), len(prices))), ema[: len(prices)], color="#ed7d31", label="EMA")
-    ax_p.set_title(f"{ticker} — TA reference (not used for signals)")
+    ax_p.set_title(f"{ticker} — Tham khảo TA (không ra tín hiệu)")
     ax_p.legend(fontsize=8)
     ax_v.bar(range(len(volumes)), volumes, color="#a5a5a5", width=1.0)
-    ax_v.set_ylabel("vol")
+    ax_v.set_ylabel("KL")
     fig.text(0.5, 0.01, "Tham khảo thêm — không dùng để ra tín hiệu", ha="center", fontsize=9)
     return _save(fig, out)
 

@@ -127,6 +127,7 @@ def main(argv: list[str] | None = None) -> int:
             "sharpe": _json_safe(wm.get("sharpe")),
             "max_drawdown": _json_safe(wm.get("max_drawdown")),
             "n_trades": wm.get("n_trades"),
+            "equity_curve": list(wf.get("equity_curve") or []),
             "folds": [
                 {
                     "test_start": f.get("test_start"),
@@ -167,6 +168,7 @@ def main(argv: list[str] | None = None) -> int:
                 "n_trades": s.get("n_trades"),
                 "delta_sharpe": _json_safe(s.get("delta_sharpe")),
                 "decision": s.get("decision"),
+                "equity_curve": list(s.get("equity_curve") or []),
             }
             for s in steps
         ],
@@ -174,6 +176,12 @@ def main(argv: list[str] | None = None) -> int:
     }
     out_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
     print(f"wrote {out_path}", flush=True)
+    from backtest.ablation import persist_ablation_to_store
+
+    persisted = persist_ablation_to_store(
+        payload, db_path=args.db_path, run_id=out_path.stem, scope="portfolio"
+    )
+    print(f"store: {persisted.get('note')}", flush=True)
     return 0
 
 

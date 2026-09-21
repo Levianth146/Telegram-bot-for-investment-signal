@@ -47,12 +47,17 @@ def _compute_alpha_pack(
     alpha_raw = float("nan")
     tstat = float("nan")
     half_life = None
+    kalman_level_last = None
     alpha_method = "none"
     if kalman_enabled:
         level, slope, slope_var = fit_kalman_trend(log_px)
         alpha_raw = float(slope.iloc[-1])
         tstat = slope_tstat(float(slope.iloc[-1]), float(slope_var.iloc[-1]))
         alpha_method = "kalman_slope"
+        try:
+            kalman_level_last = float(level.iloc[-1])
+        except (TypeError, ValueError, IndexError):
+            kalman_level_last = None
         if use_ou:
             resid = log_px - level
             ou = fit_ou_process(resid)
@@ -80,6 +85,7 @@ def _compute_alpha_pack(
         "alpha_raw": alpha_raw,
         "tstat": tstat,
         "half_life": half_life,
+        "kalman_level_last": kalman_level_last,
         "alpha_method": alpha_method,
         "alpha_eff": alpha_eff,
         "growth": growth,
@@ -322,6 +328,7 @@ def generate_signals(
             "alpha_effective": None if pd.isna(alpha_eff) else float(alpha_eff),
             "slope_tstat": None if pd.isna(tstat) else float(tstat),
             "ou_half_life": half_life,
+            "kalman_level_last": pack.get("kalman_level_last"),
             "sigma_method": risk.get("method"),
             "weight_method": weight_method,
             "portfolio_weight": float(weights.get(ticker, 0.0)),
