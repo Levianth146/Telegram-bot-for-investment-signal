@@ -111,6 +111,60 @@ def _buyhold_result(
     }
 
 
+def _assumed_lag_days(config: Mapping[str, Any] | None) -> int:
+    sources = dict((config or {}).get("data_sources") or {})
+    backtest = dict(sources.get("financial_statements_backtest") or {})
+    return int(backtest.get("assumed_publication_lag_days", 90))
+
+
+def build_scoring_schedule(
+    tickers: list[str],
+    start_date: str,
+    end_date: str,
+    config: Mapping[str, Any] | None = None,
+    *,
+    lookback_years: int = 5,
+    db_path: str = "store/bot.db",
+    include_prior_year: bool = True,
+) -> dict[str, dict[str, Any]]:
+    """Build ``{assumed_filed_at: scoring_frames}`` for backtest PIT watchlist.
+
+    Each calendar year ``Y`` pulls annual frames ``[Y-lookback+1, Y]`` via
+    ``build_scoring_frames_from_providers`` and keys by ``assumed_filed_at(Y)``.
+    """
+    from data.ingest.pit import assumed_filed_at
+    from data.ingest.scoring_frames import build_scoring_frames_from_providers
+
+    if lookback_years < 1:
+        raise ValueError("lookback_years must be >= 1")
+    start_y = int(str(start_date)[:4])
+    end_y = int(str(end_date)[:4])
+    if start_y > end_y:
+        raise ValueError("start_date year must be <= end_date year")
+    lag = _assumed_lag_days(config)
+    first_y = start_y - 1 if include_prior_year else start_y
+    schedule: dict[str, dict[str, Any]] = {}
+    for year in range(first_y, end_y + 1):
+        frame_start = year - lookback_years + 1
+        print(
+            f"scoring_schedule: year={year} frames={frame_start}..{year} ...",
+            flush=True,
+        )
+        frames = build_scoring_frames_from_providers(
+            tickers,
+            frame_start,
+            year,
+            config=dict(config or {}),
+            db_path=db_path,
+        )
+        if not frames:
+            print(f"scoring_schedule: skip empty frames for year={year}", flush=True)
+            continue
+        filed = assumed_filed_at(year, lag)
+        schedule[filed] = frames
+    return schedule
+
+
 def run_ablation(
     config: dict,
     layers_order: list[str] | None = None,
@@ -125,6 +179,8 @@ def run_ablation(
 
     Returns ``{"steps": [...], "layers_order": [...]}`` with Sharpe/CAGR/MDD per step.
     """
+    from backtest.engine import _active_watchlist
+
     order = list(layers_order or DEFAULT_LAYERS)
     steps = []
     signal_closes = _signal_closes(close_by_ticker, config)
@@ -135,16 +191,17 @@ def run_ablation(
             result = _buyhold_result(signal_closes, start_date, end_date, config)
             label = "B0_buyhold"
         elif layer == "fundamental":
-            # Watchlist via scoring_schedule; quant flags all off → mostly WATCH,
-            # so equal-weight the current watchlist by forcing BUY via buyhold on
-            # filtered tickers when schedule exists; else same as B0.
+            # Equal-weight PASS/WATCH universe at end_date (PIT via schedule).
             if scoring_schedule:
-                # Use last schedule frames' tickers only
-                last_key = max(scoring_schedule)
-                tickers = list(scoring_schedule[last_key].keys())
+                watchlist, _scores = _active_watchlist(
+                    scoring_schedule,
+                    end_date,
+                    list(signal_closes),
+                    config,
+                )
                 subset = {
                     t: close_by_ticker[t]
-                    for t in tickers
+                    for t in watchlist
                     if t in close_by_ticker and t in signal_closes
                 }
                 result = _buyhold_result(
@@ -154,8 +211,8 @@ def run_ablation(
                 result = _buyhold_result(signal_closes, start_date, end_date, config)
             label = "fundamental"
         elif layer == "regime":
-            # Regime on; alpha still needed for a non-null alpha_raw (minimal path)
-            cfg = _set_quant_flags(config, regime=True, alpha=True, risk=False)
+            # Regime on; alpha off (alpha_eff NaN → WATCH-heavy — isolates regime).
+            cfg = _set_quant_flags(config, regime=True, alpha=False, risk=False)
             result = run_backtest(
                 cfg,
                 start_date,
@@ -233,12 +290,18 @@ def decide_keep_cut(
             sharpe_f = float(sharpe) if sharpe is not None else None
         except (TypeError, ValueError):
             sharpe_f = None
-        if row.get("layer") == "B0_buyhold" or prev_sharpe is None:
+        if sharpe_f is not None and sharpe_f != sharpe_f:  # NaN
+            sharpe_f = None
+
+        if row.get("layer") == "B0_buyhold":
             row["delta_sharpe"] = None
             row["decision"] = "baseline"
-        elif sharpe_f is None or prev_sharpe is None:
+        elif sharpe_f is None:
             row["delta_sharpe"] = None
-            row["decision"] = "pending — missing Sharpe"
+            row["decision"] = "pending — missing Sharpe (0 trades / flat)"
+        elif prev_sharpe is None:
+            row["delta_sharpe"] = None
+            row["decision"] = "baseline (no prior Sharpe)"
         else:
             delta = sharpe_f - prev_sharpe
             row["delta_sharpe"] = delta
@@ -249,6 +312,7 @@ def decide_keep_cut(
                     f"cut from main / keep appendix "
                     f"(dSharpe={delta:+.3f} < +{threshold:.2f})"
                 )
+
         if sharpe_f is not None:
             prev_sharpe = sharpe_f
         annotated.append(row)
@@ -373,6 +437,28 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Do not fetch quant_engine.benchmark OHLCV",
     )
+    parser.add_argument(
+        "--with-fundamentals",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Build PIT scoring_schedule via providers (default: on)",
+    )
+    parser.add_argument(
+        "--lookback-years",
+        type=int,
+        default=5,
+        help="Annual BCTC lookback per schedule year (default: 5)",
+    )
+    parser.add_argument(
+        "--db-path",
+        default="store/bot.db",
+        help="SQLite path for sector_mapping (default: store/bot.db)",
+    )
+    parser.add_argument(
+        "--walk-forward",
+        action="store_true",
+        help="Also run walk-forward OOS on full P0 stack (regime+alpha+risk)",
+    )
     args = parser.parse_args(argv)
 
     config = _load_config(args.config)
@@ -401,14 +487,71 @@ def main(argv: list[str] | None = None) -> int:
         flush=True,
     )
 
+    scoring_schedule = None
+    if args.with_fundamentals:
+        scoring_schedule = build_scoring_schedule(
+            tickers,
+            start,
+            end,
+            config,
+            lookback_years=max(int(args.lookback_years), 1),
+            db_path=args.db_path,
+        )
+        print(
+            f"scoring_schedule keys={sorted(scoring_schedule)} "
+            f"n_years={len(scoring_schedule)}",
+            flush=True,
+        )
+
     raw = run_ablation(
         config,
         close_by_ticker=closes,
         start_date=start,
         end_date=end,
+        scoring_schedule=scoring_schedule,
         signal_every_n_days=max(int(args.signal_every), 1),
     )
     steps = decide_keep_cut(raw["steps"])
+
+    walk_forward_payload = None
+    if args.walk_forward:
+        from backtest.walk_forward import run_walk_forward
+
+        print("walk_forward: full P0 stack ...", flush=True)
+        wf_cfg = _set_quant_flags(config, regime=True, alpha=True, risk=True)
+        wf = run_walk_forward(
+            wf_cfg,
+            start,
+            end,
+            close_by_ticker=closes,
+            scoring_schedule=scoring_schedule,
+            signal_every_n_days=max(int(args.signal_every), 1),
+            signal_tickers=list(signal_names),
+        )
+        wm = wf.get("metrics") or {}
+        walk_forward_payload = {
+            "n_folds": len(wf.get("folds") or []),
+            "cagr": _json_safe(wm.get("cagr")),
+            "sharpe": _json_safe(wm.get("sharpe")),
+            "max_drawdown": _json_safe(wm.get("max_drawdown")),
+            "n_trades": wm.get("n_trades"),
+            "folds": [
+                {
+                    "test_start": f.get("test_start"),
+                    "test_end": f.get("test_end"),
+                    "sharpe": _json_safe((f.get("metrics") or {}).get("sharpe")),
+                    "cagr": _json_safe((f.get("metrics") or {}).get("cagr")),
+                    "n_trades": (f.get("metrics") or {}).get("n_trades"),
+                }
+                for f in (wf.get("folds") or [])
+            ],
+        }
+        print(
+            f"walk_forward: folds={walk_forward_payload['n_folds']} "
+            f"sharpe={walk_forward_payload['sharpe']} "
+            f"cagr={walk_forward_payload['cagr']}",
+            flush=True,
+        )
 
     out_path = Path(args.out_json)
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -417,6 +560,8 @@ def main(argv: list[str] | None = None) -> int:
         "end_date": end,
         "tickers": tickers,
         "loaded": sorted(closes),
+        "scoring_schedule_keys": sorted(scoring_schedule or {}),
+        "with_fundamentals": bool(args.with_fundamentals),
         "layers_order": raw["layers_order"],
         "sharpe_keep_delta": SHARPE_KEEP_DELTA,
         "steps": [
@@ -432,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             for s in steps
         ],
+        "walk_forward": walk_forward_payload,
         "note": (
             "P0 stack only; MC/BL forced off in ablation. "
             "Do not flip pipeline defaults until P1 ablation has numbers."

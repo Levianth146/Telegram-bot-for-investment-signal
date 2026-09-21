@@ -46,6 +46,7 @@ số khác) — điền ngày chốt: __________
 | 2026-09-21 | Live FS chain (`vnstock`/`cafef`/`vietstock`) vẫn stub; registry **luôn append** `VnFinancialDataStatements` last-resort (`registry.py`) | Ceiling: phụ thuộc annual package đến khi live BCTC API thật; DNSE OHLCV vẫn stub → fallback vnstock (đủ smoke) |
 | 2026-09-21 | Hist val live: year-end close + assumed lag đủ cho VNM/FPT (`historical_valuation_available=true`, ~5 obs) → vẫn WATCH (không ép PASS) | Không cần vá `scoring_frames` sau smoke |
 | 2026-09-21 | Ablation P0 CLI (`python -m backtest.ablation`); MC/BL vẫn **forced off** trong `_set_quant_flags` | Không flip default P1 trong `config.yaml` đến khi có số OOS đạt +0.10 Sharpe |
+| 2026-09-21 | Ablation CLI: `--with-fundamentals` → `build_scoring_schedule`; tách regime (alpha off) vs alpha; `--walk-forward` | Fundamental giữ (+0.71 Sharpe); quant single-window cắt; WF OOS mỏng — chưa flip P1 |
 
 ## Log thực tế của nhóm
 
@@ -62,3 +63,19 @@ Ngưỡng giữ tầng: **ΔSharpe ≥ +0.10** vs bước trước (single-windo
 | 2026-09-21 | **P1 MC / BL defaults** | — | **Không bật** `probabilistic_monte_carlo` / `portfolio_black_litterman` cho đến khi ablation P0 có số OOS đạt ngưỡng (hoặc sample lớn hơn) | plan |
 
 Ceiling lần chạy: universe 2 mã; không scoring_schedule; `signal_every=40` (Markov/GARCH refit chậm trên cửa sổ dài); JSON tại `store/ablation_p0.json`.
+
+### Ablation P0 + scoring_schedule + walk-forward (2026-09-21, lần 2)
+
+CLI: `python -m backtest.ablation --with-fundamentals --walk-forward --signal-every 20`
+Window 2021–2024, VNM/FPT, schedule keys `2021-03-31`…`2025-03-31` (assumed lag 90d).
+
+| Ngày | Tầng thử nghiệm | Kết quả (Sharpe/CAGR/MDD) | Quyết định | Người chốt |
+|---|---|---|---|---|
+| 2026-09-21 | B0 buy&hold | Sharpe **0.92** / CAGR 0.18 / MDD −0.18 | Baseline | auto |
+| 2026-09-21 | +fundamental (PIT PASS/WATCH buyhold) | Sharpe **1.63** (Δ **+0.71**) / CAGR 0.50 / MDD −0.31 | **Giữ** (≥ +0.10) — schedule tách được FF khỏi B0 | auto |
+| 2026-09-21 | +regime (alpha off) | 0 trades; Sharpe null | Pending — alpha off → WATCH-only (đúng thiết kế tách layer) | auto |
+| 2026-09-21 | +alpha | Sharpe **−0.22** (Δ **−1.85** vs fundamental); n_trades=5 | Cắt khỏi bản chính trên single-window này | auto |
+| 2026-09-21 | +risk GARCH | Sharpe −0.22 (Δ **+0.00**); cùng 5 trades | Chưa đạt ngưỡng biên vs alpha | auto |
+| 2026-09-21 | Walk-forward OOS full P0 (2 folds 2024 H1/H2) | Sharpe OOS **1.15** / CAGR 0.017 / n_trades=2 | Số OOS dương nhưng sample rất mỏng (2 trades) — **chưa đủ** để flip MC/BL; giữ quant P0 code, mở rộng universe trước khi chốt | auto |
+
+MC/BL defaults vẫn `enabled: false`. JSON: `store/ablation_p0.json`.

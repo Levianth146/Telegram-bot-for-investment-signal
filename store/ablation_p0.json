@@ -10,6 +10,14 @@
     "VNINDEX",
     "VNM"
   ],
+  "scoring_schedule_keys": [
+    "2021-03-31",
+    "2022-03-31",
+    "2023-03-31",
+    "2024-03-30",
+    "2025-03-31"
+  ],
+  "with_fundamentals": true,
   "layers_order": [
     "B0_buyhold",
     "fundamental",
@@ -21,9 +29,9 @@
   "steps": [
     {
       "layer": "B0_buyhold",
-      "cagr": 0.18457352587656461,
-      "sharpe": 0.9166179807572257,
-      "max_drawdown": -0.17553815569871012,
+      "cagr": 0.18454538660533926,
+      "sharpe": 0.9164176831083297,
+      "max_drawdown": -0.17554224022134257,
       "win_rate": null,
       "n_trades": 0,
       "delta_sharpe": null,
@@ -31,44 +39,67 @@
     },
     {
       "layer": "fundamental",
-      "cagr": 0.18457352587656461,
-      "sharpe": 0.9166179807572257,
-      "max_drawdown": -0.17553815569871012,
+      "cagr": 0.5019692650495169,
+      "sharpe": 1.6293509070155925,
+      "max_drawdown": -0.3075183719615586,
       "win_rate": null,
       "n_trades": 0,
-      "delta_sharpe": 0.0,
-      "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
+      "delta_sharpe": 0.7129332239072628,
+      "decision": "keep (dSharpe=+0.713 >= +0.10)"
     },
     {
       "layer": "regime",
-      "cagr": -0.002316356966666211,
-      "sharpe": -0.6976711367248797,
-      "max_drawdown": -0.009751808460976896,
-      "win_rate": 0.0,
-      "n_trades": 2,
-      "delta_sharpe": -1.6142891174821052,
-      "decision": "cut from main / keep appendix (dSharpe=-1.614 < +0.10)"
+      "cagr": 0.0,
+      "sharpe": null,
+      "max_drawdown": 0.0,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": null,
+      "decision": "pending — missing Sharpe (0 trades / flat)"
     },
     {
       "layer": "alpha",
-      "cagr": -0.002316356966666211,
-      "sharpe": -0.6976711367248797,
-      "max_drawdown": -0.009751808460976896,
-      "win_rate": 0.0,
-      "n_trades": 2,
-      "delta_sharpe": 0.0,
-      "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
+      "cagr": -0.0016390398557696306,
+      "sharpe": -0.2158871223757356,
+      "max_drawdown": -0.019576965916695555,
+      "win_rate": 0.2,
+      "n_trades": 5,
+      "delta_sharpe": -1.8452380293913282,
+      "decision": "cut from main / keep appendix (dSharpe=-1.845 < +0.10)"
     },
     {
       "layer": "risk",
-      "cagr": -0.002316356966666211,
-      "sharpe": -0.6976711367248797,
-      "max_drawdown": -0.009751808460976896,
-      "win_rate": 0.0,
-      "n_trades": 2,
+      "cagr": -0.0016390398557696306,
+      "sharpe": -0.2158871223757356,
+      "max_drawdown": -0.019576965916695555,
+      "win_rate": 0.2,
+      "n_trades": 5,
       "delta_sharpe": 0.0,
       "decision": "cut from main / keep appendix (dSharpe=+0.000 < +0.10)"
     }
   ],
+  "walk_forward": {
+    "n_folds": 2,
+    "cagr": 0.0168849841203651,
+    "sharpe": 1.1504550299688154,
+    "max_drawdown": -0.006485251086551513,
+    "n_trades": 2,
+    "folds": [
+      {
+        "test_start": "2024-01-01",
+        "test_end": "2024-06-30",
+        "sharpe": 1.7479061298852654,
+        "cagr": 0.03205542253523275,
+        "n_trades": 1
+      },
+      {
+        "test_start": "2024-07-01",
+        "test_end": "2024-12-31",
+        "sharpe": 0.31079820537753594,
+        "cagr": 0.0032185664951820403,
+        "n_trades": 1
+      }
+    ]
+  },
   "note": "P0 stack only; MC/BL forced off in ablation. Do not flip pipeline defaults until P1 ablation has numbers."
 }

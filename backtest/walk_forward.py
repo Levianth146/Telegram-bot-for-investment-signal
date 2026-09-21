@@ -76,6 +76,7 @@ def run_walk_forward(
     close_by_ticker: Mapping[str, Any],
     scoring_schedule: Mapping[str, Any] | None = None,
     signal_every_n_days: int = 5,
+    signal_tickers: list[str] | None = None,
 ) -> dict:
     """Run OOS folds; concatenate test equity and report fold + pooled metrics."""
     bt = dict(config.get("backtest") or {})
@@ -96,6 +97,7 @@ def run_walk_forward(
             close_by_ticker=close_by_ticker,
             scoring_schedule=scoring_schedule,
             signal_every_n_days=signal_every_n_days,
+            signal_tickers=signal_tickers,
         )
         folds.append(
             {

@@ -182,6 +182,86 @@ def test_ablation_signal_closes_excludes_benchmark():
     assert "VNINDEX" not in subset
 
 
+def test_build_scoring_schedule_keys(monkeypatch):
+    from backtest import ablation as ablation_mod
+    from data.ingest.pit import assumed_filed_at
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db"):
+        calls.append((start_year, end_year))
+        import pandas as pd
+
+        return {
+            "VNM": pd.DataFrame(
+                {"year": [end_year], "ticker": ["VNM"], "revenue": [1.0]}
+            )
+        }
+
+    monkeypatch.setattr(
+        "data.ingest.scoring_frames.build_scoring_frames_from_providers",
+        fake_build,
+    )
+    cfg = {
+        "data_sources": {
+            "financial_statements_backtest": {"assumed_publication_lag_days": 90}
+        }
+    }
+    schedule = ablation_mod.build_scoring_schedule(
+        ["VNM"],
+        "2021-01-01",
+        "2022-12-31",
+        cfg,
+        lookback_years=3,
+        include_prior_year=True,
+    )
+    # years 2020, 2021, 2022 (prior + window)
+    assert assumed_filed_at(2020, 90) in schedule
+    assert assumed_filed_at(2021, 90) in schedule
+    assert assumed_filed_at(2022, 90) in schedule
+    assert calls  # at least one provider build
+    # lookback 3 for year 2022 → start 2020
+    assert (2020, 2022) in calls
+
+
+def test_ablation_regime_alpha_flags_differ(monkeypatch):
+    """regime layer must disable alpha; alpha/risk enable it."""
+    from backtest import ablation as ablation_mod
+
+    seen: list[tuple[bool, bool, bool]] = []
+
+    def fake_set(config, *, regime, alpha, risk):
+        seen.append((regime, alpha, risk))
+        return config
+
+    monkeypatch.setattr(ablation_mod, "_set_quant_flags", fake_set)
+
+    def fake_backtest(*_a, **_k):
+        return {
+            "metrics": {
+                "cagr": 0.0,
+                "sharpe": 0.0,
+                "max_drawdown": 0.0,
+                "win_rate": 0.0,
+                "n_trades": 0,
+            }
+        }
+
+    monkeypatch.setattr(ablation_mod, "run_backtest", fake_backtest)
+    closes = {"AAA": _close(n=40, seed=9)}
+    ablation_mod.run_ablation(
+        _config(),
+        ["regime", "alpha", "risk"],
+        close_by_ticker=closes,
+        start_date=closes["AAA"].index[5],
+        end_date=closes["AAA"].index[-1],
+        signal_every_n_days=20,
+    )
+    assert seen[0] == (True, False, False)
+    assert seen[1] == (True, True, False)
+    assert seen[2] == (True, True, True)
+
+
 def test_p1_cvar_and_regime_sharpe_metrics():
     from backtest.metrics import compute_metrics
 

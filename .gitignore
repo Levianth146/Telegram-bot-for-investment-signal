@@ -8,3 +8,7 @@ data/cache/*
 *.log
 .ipynb_checkpoints/
 graphify-out/cost.json
+# Framework / course docs — never commit (user self-audits)
+Project.pdf
+*.docx
+graphify-out/converted/
