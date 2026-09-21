@@ -95,30 +95,124 @@ def _reason_payload(signal_row: dict) -> dict:
         return {}
 
 
+def format_welcome() -> str:
+    """/start và /help — hướng dẫn dùng bot (framework mục 9.7, giọng thân thiện)."""
+    return "\n".join(
+        [
+            "Xin chào — Bot tín hiệu đầu tư (sản phẩm học thuật).",
+            "",
+            "Bot chỉ ĐỌC kết quả đã tính sẵn trong store/ (không tự crawl hay fit lại mô hình).",
+            "",
+            "Bắt đầu nhanh:",
+            "1) /subscribe — nhận tin khi pipeline daily chạy xong",
+            "2) /signals — danh sách BUY / SELL / WATCH phiên gần nhất",
+            "3) /check VNM — chi tiết 4 khối cho một mã (cơ bản → regime → alpha → risk)",
+            "4) /watchlist — rổ PASS/WATCH từ bộ lọc cơ bản (Tầng 1)",
+            "5) /regime — xác suất thị trường nghiêng tăng (chung cả rổ)",
+            "",
+            "Lưu ý hay gây hiểu nhầm:",
+            "• p_bull trên /signals là regime THỊ TRƯỜNG (thường từ VNINDEX) — cùng một số cho mọi mã",
+            "• size mặc định equal-weight (1/N NAV); khác nhau rõ khi bật Black-Litterman hoặc σ̂ rất lớn",
+            "• Khác biệt từng mã nằm ở action, score (alpha), σ̂ và stop — xem /check <mã>",
+            "",
+            "Lệnh khác: /positions /sector /status /chart <mã> fundamental "
+            "/backtest /unsubscribe /about",
+            "",
+            DISCLAIMER,
+        ]
+    )
+
+
 def format_signals_list(signal_rows: list[dict]) -> str:
-    """Một dòng/mã cho /signals."""
+    """Một dòng/mã cho /signals — hiện số phân biệt từng mã + chú thích regime chung."""
     if not signal_rows:
-        return "Chưa có tín hiệu trong store.\n\n" + DISCLAIMER
-    lines = ["Tín hiệu phiên gần nhất:", ""]
-    for row in signal_rows:
-        lines.append(
-            f"{row.get('action', '?')} — {row.get('ticker')} | "
-            f"p_bull={_fmt_num(row.get('p_regime'))} | "
-            f"size={_fmt_num(row.get('size'), 3)}  "
-            f"→ /check {row.get('ticker')}"
+        return (
+            "Chưa có tín hiệu trong store.\n"
+            "Gợi ý: đợi pipeline daily chạy, hoặc hỏi admin chạy "
+            "`python scripts/run_daily_pipeline.py`.\n\n"
+            + DISCLAIMER
         )
-    lines.extend(["", DISCLAIMER])
+
+    day = signal_rows[0].get("date") or ""
+    p_vals = [
+        float(r["p_regime"])
+        for r in signal_rows
+        if r.get("p_regime") is not None
+    ]
+    p_shared = None
+    if p_vals:
+        p_vals_sorted = sorted(p_vals)
+        p_shared = p_vals_sorted[len(p_vals_sorted) // 2]
+
+    lines = [
+        f"Tín hiệu phiên gần nhất{f' ({day})' if day else ''}:",
+        "",
+    ]
+    if p_shared is not None:
+        lines.append(
+            f"Regime thị trường (chung mọi mã): P(bull)={_fmt_num(p_shared)} "
+            f"— {translate_regime(p_shared)}"
+        )
+        lines.append(
+            "Size dưới đây thường bằng equal-weight 1/N (BL đang tắt). "
+            "Số khác nhau theo mã: score / σ̂ — gõ /check <mã> để xem stop & chi tiết."
+        )
+        lines.append("")
+
+    # Nhóm theo action để dễ đọc hơn liệt kê phẳng
+    order = ("BUY", "SELL", "WATCH")
+    by_action: dict[str, list[dict]] = {k: [] for k in order}
+    other: list[dict] = []
+    for row in signal_rows:
+        act = str(row.get("action") or "?").upper()
+        if act in by_action:
+            by_action[act].append(row)
+        else:
+            other.append(row)
+
+    for act in order:
+        rows = by_action[act]
+        if not rows:
+            continue
+        lines.append(f"— {act} ({len(rows)}) —")
+        for row in rows:
+            lines.append(
+                f"{row.get('ticker')} | score={_fmt_num(row.get('score'))} | "
+                f"σ̂={_fmt_num(row.get('sigma_hat'), 4)} | "
+                f"size={_fmt_num(row.get('size'), 3)}  "
+                f"→ /check {row.get('ticker')}"
+            )
+        lines.append("")
+
+    for row in other:
+        lines.append(
+            f"{row.get('action')} — {row.get('ticker')} | "
+            f"score={_fmt_num(row.get('score'))} → /check {row.get('ticker')}"
+        )
+
+    lines.append(DISCLAIMER)
     return "\n".join(lines)
 
 
 def format_watchlist(rows: list[dict]) -> str:
     if not rows:
-        return "Watchlist trống — chạy quarterly_job trước.\n\n" + DISCLAIMER
+        return (
+            "Watchlist trống.\n"
+            "Đây là rổ PASS/WATCH sau bộ lọc cơ bản (Tầng 1). "
+            "Cần chạy quarterly_job trước khi có danh sách.\n\n"
+            + DISCLAIMER
+        )
     as_of = rows[0].get("as_of_date", "")
-    lines = [f"Watchlist ({as_of}):", ""]
+    lines = [
+        f"Watchlist Tầng 1{f' ({as_of})' if as_of else ''}:",
+        "PASS = đủ điều kiện vào rổ quant; WATCH = theo dõi / chưa đủ tin cậy valuation.",
+        "",
+    ]
     for row in rows:
         lines.append(f"{row.get('ticker')}: {row.get('fundamental_view')}")
-    lines.extend(["", DISCLAIMER])
+    lines.extend(
+        ["", "Tiếp: /signals để xem tín hiệu phiên, /check <mã> để xem chi tiết.", "", DISCLAIMER]
+    )
     return "\n".join(lines)
 
 
@@ -144,32 +238,35 @@ def format_signal_message(
     day = signal_row.get("date", "")
 
     lines = [
-        f"{action} — {ticker} | {day}",
+        f"{action} — {ticker}{f' | {day}' if day else ''}",
         "",
-        "① Bộ lọc cơ bản (Tầng 1)",
-        f"View: {fundamental_row.get('fundamental_view', '—')}",
+        "① Bộ lọc cơ bản (Tầng 1) — chất lượng doanh nghiệp",
+        f"Phân loại: {fundamental_row.get('fundamental_view', '—')}",
         (
-            f"G={_fmt_num(fundamental_row.get('growth_score'))} "
-            f"Q={_fmt_num(fundamental_row.get('quality_score'))} "
-            f"S={_fmt_num(fundamental_row.get('safety_score'))} "
-            f"V={_fmt_num(fundamental_row.get('valuation_score'))}"
+            f"Tăng trưởng={_fmt_num(fundamental_row.get('growth_score'))} | "
+            f"Chất lượng={_fmt_num(fundamental_row.get('quality_score'))} | "
+            f"An toàn={_fmt_num(fundamental_row.get('safety_score'))} | "
+            f"Định giá={_fmt_num(fundamental_row.get('valuation_score'))}"
         ),
-        f"Headline: {HEADLINE_METRICS['growth']}/{HEADLINE_METRICS['quality']}/"
-        f"{HEADLINE_METRICS['safety']}/{HEADLINE_METRICS['valuation']}",
+        "(Thang 0–100 theo module; headline metric khung chiến lược: "
+        f"{HEADLINE_METRICS['growth']}, {HEADLINE_METRICS['quality']}, "
+        f"{HEADLINE_METRICS['safety']}, {HEADLINE_METRICS['valuation']})",
         "",
-        "② Trạng thái thị trường (Regime)",
+        "② Regime thị trường — chung cả rổ (không phải riêng mã này)",
         f"P(bull) = {_fmt_num(signal_row.get('p_regime'))}",
         f"→ {translate_regime(signal_row.get('p_regime'))}",
         "",
-        "③ Tín hiệu vào lệnh (Alpha)",
-        f"Score: {_fmt_num(signal_row.get('score'))}",
-        f"Trend: {translate_kalman_trend(reason.get('slope_tstat'))}",
-        f"Alpha method: {reason.get('alpha_method', '—')}",
+        "③ Alpha / xu hướng riêng mã",
+        f"Score (alpha hiệu dụng): {_fmt_num(signal_row.get('score'))}",
+        f"Xu hướng: {translate_kalman_trend(reason.get('slope_tstat'))}",
+        f"Phương pháp: {reason.get('alpha_method', '—')}",
         "",
-        "④ Rủi ro & khối lượng (Risk)",
-        f"σ̂ = {_fmt_num(signal_row.get('sigma_hat'), 4)}",
-        f"Stop = {_fmt_num(signal_row.get('stop'))}",
-        f"Size = {_fmt_num(signal_row.get('size'), 3)} NAV",
+        "④ Rủi ro & kích thước vị thế",
+        f"Biến động ngày σ̂ = {_fmt_num(signal_row.get('sigma_hat'), 4)}",
+        f"Stop gợi ý = {_fmt_num(signal_row.get('stop'))}",
+        f"Size = {_fmt_num(signal_row.get('size'), 3)} NAV "
+        f"(weight={_fmt_num(reason.get('portfolio_weight'), 3)}, "
+        f"{reason.get('weight_method', '—')})",
     ]
     if signal_row.get("p_tp_before_sl") is not None:
         lines.append(f"P(TP before SL) = {_fmt_num(signal_row.get('p_tp_before_sl'))}")

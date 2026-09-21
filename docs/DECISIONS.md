@@ -50,6 +50,7 @@ số khác) — điền ngày chốt: __________
 | 2026-09-21 | Universe CSV + `request_delay_ms` OHLCV throttle; smoke N=10 missing 0% | Scale có kiểm soát trước full board / flip P1 |
 | 2026-09-21 | OHLCV disk cache (`cache_ohlcv` + `cache_dir`) keyed by ticker/start/end | Giảm vendor calls khi re-run daily; không ảnh hưởng PIT BCTC |
 | 2026-09-21 | Ops live path: `scripts/run_daily_pipeline.py` + `.env` `BOT_TOKEN`; getMe OK; daily push **sent=1** (1 subscriber) | Token chỉ local; MC/BL vẫn `enabled: false` |
+| 2026-09-21 | Bot UX: `/signals` chú thích regime chung + hiện score/σ̂; `/start` hướng dẫn; p_bull/size đồng nhất = thiết kế P0 (không bug) | Equal-weight + regime VNINDEX; MC/BL vẫn off |
 
 ## Log thực tế của nhóm
 

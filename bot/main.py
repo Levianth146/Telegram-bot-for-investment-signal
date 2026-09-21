@@ -105,23 +105,17 @@ def build_application(token: str):
     from telegram.ext import Application, CommandHandler, ContextTypes
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        text = (
-            "Bot tín hiệu đầu tư (học thuật).\n"
-            "Lệnh: /signals /check <mã> /watchlist /regime "
-            "/positions /backtest <scope> /status /sector "
-            "/chart <mã> [fundamental|price|…] "
-            "/subscribe /unsubscribe /about /help\n\n"
-            + formatters.DISCLAIMER
-        )
-        await update.message.reply_text(text)
+        await update.message.reply_text(formatters.format_welcome())
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await start(update, context)
 
     async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
-            "Telegram Bot Tín hiệu — Fundamental Filter + Quant Regime Engine.\n"
-            "Bot chỉ ĐỌC store/, không tính toán lại mô hình.\n\n"
+            "Bot kết hợp Bộ lọc cơ bản (Tầng 1) và Quant Regime Engine (Tầng 2).\n"
+            "Luồng: quarterly → daily ghi store/ → bạn đọc bằng lệnh Telegram.\n"
+            "Bot không tự tính lại mô hình và không khuyến nghị đầu tư.\n\n"
+            "Gõ /help để xem cách dùng từng lệnh.\n\n"
             + formatters.DISCLAIMER
         )
 
@@ -139,7 +133,11 @@ def build_application(token: str):
 
     async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         if not context.args:
-            await update.message.reply_text("Dùng: /check VNM")
+            await update.message.reply_text(
+                "Cú pháp: /check <mã>\n"
+                "Ví dụ: /check VNM\n"
+                "Lệnh này mở 4 khối giải thích cho một mã (cơ bản, regime, alpha, risk)."
+            )
             return
         ticker = context.args[0]
         signal, fund = read_signal_and_fundamental(ticker)

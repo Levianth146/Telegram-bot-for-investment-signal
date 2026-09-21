@@ -93,8 +93,36 @@ def test_formatters_regime_and_check():
     )
     assert "BUY — VNM" in msg
     assert "① Bộ lọc cơ bản" in msg
+    assert "chung cả rổ" in msg
     assert formatters.DISCLAIMER in msg
-    assert formatters.format_signals_list([]) 
+    welcome = formatters.format_welcome()
+    assert "/signals" in welcome and "p_bull" in welcome
+    sig_list = formatters.format_signals_list(
+        [
+            {
+                "date": "2024-06-28",
+                "ticker": "VNM",
+                "action": "BUY",
+                "score": 1.2,
+                "p_regime": 0.59,
+                "sigma_hat": 0.02,
+                "size": 0.062,
+            },
+            {
+                "date": "2024-06-28",
+                "ticker": "FPT",
+                "action": "SELL",
+                "score": -0.5,
+                "p_regime": 0.59,
+                "sigma_hat": 0.018,
+                "size": 0.062,
+            },
+        ]
+    )
+    assert "Regime thị trường" in sig_list
+    assert "score=" in sig_list
+    assert "VNM" in sig_list and "FPT" in sig_list
+    assert formatters.format_signals_list([])
     assert "Watchlist" in formatters.format_watchlist(
         [{"as_of_date": "2024-01-01", "ticker": "AAA", "fundamental_view": "PASS"}]
     )
