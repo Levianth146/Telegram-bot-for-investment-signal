@@ -47,6 +47,14 @@ python -m pipeline.daily_job         # Tầng 2 — chạy sau giờ đóng cử
 python -m bot.main                   # Khởi động bot (chỉ đọc store/)
 ```
 
+## Chạy live (ops)
+
+1. `cp .env.example .env` rồi điền `BOT_TOKEN` (không commit `.env`).
+2. Universe/watchlist: `python -m pipeline.quarterly_job` (hoặc đã có dữ liệu trong `store/`).
+3. Một lần pipeline + push: `python scripts/run_daily_pipeline.py` (thêm `--with-sector` nếu cần refresh ngành).
+4. Bot polling: `python -m bot.main` (không `--dry-run`). Trong Telegram: `/start` → `/subscribe` → `/signals`.
+5. Chạy lại `run_daily_pipeline` sau khi subscribe để nhận push.
+
 ## Backtest
 
 ```bash

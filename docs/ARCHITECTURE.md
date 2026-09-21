@@ -90,6 +90,13 @@ Sau khi ghi `signals`, `pipeline/daily_job.py` đọc `subscribers` và (nếu `
 gửi push. Benchmark (`quant_engine.benchmark`, thường VNINDEX) chỉ dùng cho regime — không
 sinh hàng `signals`.
 
+### Ops live (một máy)
+
+1. `.env`: `BOT_TOKEN`, `DATABASE_PATH=store/bot.db` (xem `.env.example`).
+2. `python scripts/run_daily_pipeline.py` — optional `--with-sector`; persist + push.
+3. `python -m bot.main` — polling; user `/subscribe` trước khi kỳ vọng push > 0.
+4. Bot chỉ đọc `store/`; không crawl vendor trong handlers.
+
 ## Bảng `signals` (hợp đồng giao diện giữa Tầng 2 và bot)
 
 Xem `store/schema.sql`. Cột bắt buộc: `date, ticker, action, score, p_regime, sigma_hat,
