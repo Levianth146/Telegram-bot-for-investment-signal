@@ -18,6 +18,15 @@ def test_load_universe_tickers_sample():
     assert len(tickers) == len(set(tickers))
 
 
+def test_load_hose_liquid_35():
+    path = Path("data/universe/hose_liquid_35.csv")
+    tickers = load_universe_tickers(path)
+    assert len(tickers) >= 30
+    assert len(tickers) <= 40
+    assert "FPT" in tickers and "DPM" in tickers
+    assert len(tickers) == len(set(tickers))
+
+
 def test_load_universe_tickers_comments(tmp_path):
     path = tmp_path / "u.csv"
     path.write_text("# comment\nticker\nAAA\n\nbbb\nAAA\n", encoding="utf-8")

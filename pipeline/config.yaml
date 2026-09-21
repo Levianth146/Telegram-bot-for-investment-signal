@@ -3,9 +3,9 @@
 # xử lý trường hợp enabled=false bằng giá trị fallback (xem docs/ARCHITECTURE.md).
 
 universe:
-  name: "vn30_sample"
-  size: 25
-  file: "data/universe/vn30_sample.csv"
+  name: "hose_liquid_35"
+  size: 35
+  file: "data/universe/hose_liquid_35.csv"
   # V1: chỉ HOSE + HNX — không phân tích UPCOM (và sàn ngoài list)
   allowed_exchanges: [HOSE, HNX]
 

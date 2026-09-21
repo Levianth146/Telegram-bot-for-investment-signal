@@ -117,3 +117,18 @@ MC/BL defaults vẫn `enabled: false`. JSON: `store/ablation_p0.json`.
 | 2026-09-21 | WF OOS 2 folds 2024 | Sharpe OOS **0.90** / CAGR 0.015 / n_trades=**1** | Vẫn mỏng OOS — **không** flip MC/BL | auto |
 
 MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
+
+### HOSE liquid 35 + ablation 6 mã (2026-09-21)
+
+- Universe mặc định: [`data/universe/hose_liquid_35.csv`](data/universe/hose_liquid_35.csv) (35 mã HOSE liquid; `pipeline/config.yaml` `universe.file`); sector_mapping backfill 10 mã mới → **35 HOSE**.
+- Ablation quiet 6 mã FPT,VNM,HPG,GAS,MWG,REE; 2021–2024; `signal_every=42`; JSON `store/ablation_hose8_wf.json`:
+
+| Ngày | Tầng / OOS | Kết quả | Quyết định | Người chốt |
+|---|---|---|---|---|
+| 2026-09-21 | B0 buy&hold 6 mã | Sharpe **0.76** / CAGR 0.13 | Baseline | auto |
+| 2026-09-21 | +fundamental PIT | Sharpe **0.84** (Δ **+0.081**) | Cắt ngưỡng trên sample này (< +0.10); sample VNM/FPT trước vẫn KEEP | auto |
+| 2026-09-21 | +alpha | Sharpe **−0.19** (Δ **−1.03**); n_trades=**7** (dày hơn 1–5 trades cũ) | Cắt khỏi bản chính | auto |
+| 2026-09-21 | +risk | Δ **+0.00** vs alpha | Không flip thêm | auto |
+| 2026-09-21 | WF OOS 2 folds 2024 | Sharpe OOS **1.07** / CAGR 0.024 / n_trades=**1** | OOS vẫn mỏng — **không** flip MC/BL | auto |
+
+MC/BL defaults vẫn `enabled: false`.
