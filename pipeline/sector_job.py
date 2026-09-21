@@ -117,13 +117,23 @@ def main() -> None:
         print(f"  enabled: {(config.get('sector_classification') or {}).get('enabled', True)}")
         return
 
-    from data.universe import resolve_tickers
+    from data.universe import filter_tickers_for_config, resolve_tickers
 
     universe_file = args.universe_file or (config.get("universe") or {}).get("file")
     tickers = resolve_tickers(
         tickers_csv=args.tickers,
         universe_file=universe_file or None,
     )
+    if tickers:
+        tickers, dropped = filter_tickers_for_config(
+            tickers, config, db_path=args.db_path
+        )
+        if dropped:
+            print(
+                f"sector_job: dropped {len(dropped)} by exchange: "
+                f"{', '.join(dropped)}",
+                flush=True,
+            )
     result = run(
         config,
         tickers=tickers or None,

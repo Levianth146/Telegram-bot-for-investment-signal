@@ -45,14 +45,29 @@ def load_config(config_path: str | Path | None = None) -> dict[str, Any]:
 
 
 def load_watchlist_tickers(
-    db_path: str = "store/bot.db", as_of_date: str | None = None
+    db_path: str = "store/bot.db",
+    as_of_date: str | None = None,
+    *,
+    config: dict | None = None,
 ) -> list[str]:
     conn = repository.get_connection(db_path)
     try:
         repository.init_schema(conn)
-        return repository.get_watchlist(conn, as_of_date)
+        tickers = repository.get_watchlist(conn, as_of_date)
     finally:
         conn.close()
+    if not config:
+        return tickers
+    from data.universe import filter_tickers_for_config
+
+    kept, dropped = filter_tickers_for_config(tickers, config, db_path=db_path)
+    if dropped:
+        print(
+            f"daily_job: dropped {len(dropped)} watchlist by exchange: "
+            f"{', '.join(dropped)}",
+            flush=True,
+        )
+    return kept
 
 
 def prepare_price_inputs(
@@ -151,7 +166,9 @@ def run(
 ) -> dict[str, Any]:
     """Load watchlist, prepare prices, generate signals, optionally persist + push."""
     signal_date = as_of_date or date.today().isoformat()
-    universe = tickers or load_watchlist_tickers(db_path, as_of_date)
+    universe = tickers or load_watchlist_tickers(
+        db_path, as_of_date, config=config
+    )
     if not universe:
         return {
             "tickers": [],
@@ -246,7 +263,7 @@ def main() -> None:
     if args.dry_run:
         from data.providers import get_price_provider
 
-        tickers = load_watchlist_tickers(args.db_path)
+        tickers = load_watchlist_tickers(args.db_path, config=config)
         price = get_price_provider(config)
         print("daily_job dry-run OK")
         print(f"  price chain: {price.name}")

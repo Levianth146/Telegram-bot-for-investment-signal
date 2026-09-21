@@ -361,6 +361,28 @@ def get_sector_for_ticker(conn: sqlite3.Connection, ticker: str) -> dict | None:
     return dict(row) if row else None
 
 
+def get_markets_for_tickers(
+    conn: sqlite3.Connection, tickers: list[str]
+) -> dict[str, str | None]:
+    """Map ticker → sector_mapping.market (thiếu mapping → None). Dùng lọc sàn universe."""
+    cleaned = [str(t).strip().upper() for t in tickers if str(t).strip()]
+    result: dict[str, str | None] = {t: None for t in cleaned}
+    if not cleaned:
+        return result
+    placeholders = ",".join("?" * len(cleaned))
+    cur = conn.execute(
+        f"""
+        SELECT ticker, market
+        FROM sector_mapping
+        WHERE ticker IN ({placeholders})
+        """,
+        cleaned,
+    )
+    for row in cur.fetchall():
+        result[str(row["ticker"]).upper()] = row["market"]
+    return result
+
+
 def get_sector_overview(conn: sqlite3.Connection, as_of_date: str) -> list[dict]:
     """Bot dùng hàm này để trả lời /sector — join sector_mapping với watchlist, trả
     về số mã PASS/WATCH/FAIL theo từng ngành tại as_of_date. CHỈ ĐỌC."""

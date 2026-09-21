@@ -135,7 +135,7 @@ def main() -> None:
         print(f"  sector: {sector.name}")
         return
 
-    from data.universe import resolve_tickers
+    from data.universe import filter_tickers_for_config, resolve_tickers
 
     universe_file = args.universe_file or (config.get("universe") or {}).get("file")
     tickers = resolve_tickers(
@@ -147,6 +147,18 @@ def main() -> None:
             "Provide --tickers VNM,FPT or --universe-file data/universe/vn30_sample.csv "
             "(plus --start-year / --end-year)."
         )
+    tickers, dropped = filter_tickers_for_config(
+        tickers, config, db_path=args.db_path
+    )
+    if dropped:
+        print(
+            f"quarterly_job: dropped {len(dropped)} by exchange "
+            f"(allowed={ (config.get('universe') or {}).get('allowed_exchanges') }): "
+            f"{', '.join(dropped)}",
+            flush=True,
+        )
+    if not tickers:
+        raise SystemExit("No tickers left after exchange filter (HOSE/HNX only).")
     if args.start_year is None or args.end_year is None:
         raise SystemExit("--start-year and --end-year are required")
 

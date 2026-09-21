@@ -6,6 +6,8 @@ universe:
   name: "vn30_sample"
   size: 25
   file: "data/universe/vn30_sample.csv"
+  # V1: chỉ HOSE + HNX — không phân tích UPCOM (và sàn ngoài list)
+  allowed_exchanges: [HOSE, HNX]
 
 # Nguồn dữ liệu & thứ tự fallback — xem đánh giá đầy đủ trong docs/DATA_AUDIT.md.
 # QUAN TRỌNG: data/providers/ implement 1 interface chung theo từng loại dữ liệu bên
