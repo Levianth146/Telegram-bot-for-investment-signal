@@ -104,6 +104,11 @@ def main() -> None:
         default="",
         help="Comma-separated tickers for live fetch (requires network)",
     )
+    parser.add_argument(
+        "--universe-file",
+        default="",
+        help="CSV of tickers (used when --tickers empty; else config universe.file)",
+    )
     parser.add_argument("--start-year", type=int, default=None)
     parser.add_argument("--end-year", type=int, default=None)
     parser.add_argument("--db-path", default="store/bot.db")
@@ -130,15 +135,22 @@ def main() -> None:
         print(f"  sector: {sector.name}")
         return
 
-    tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+    from data.universe import resolve_tickers
+
+    universe_file = args.universe_file or (config.get("universe") or {}).get("file")
+    tickers = resolve_tickers(
+        tickers_csv=args.tickers,
+        universe_file=universe_file or None,
+    )
     if not tickers:
         raise SystemExit(
-            "Provide --tickers VNM,FPT --start-year YYYY --end-year YYYY "
-            "(or import run() with scoring_frames)."
+            "Provide --tickers VNM,FPT or --universe-file data/universe/vn30_sample.csv "
+            "(plus --start-year / --end-year)."
         )
     if args.start_year is None or args.end_year is None:
         raise SystemExit("--start-year and --end-year are required")
 
+    print(f"quarterly_job: {len(tickers)} tickers", flush=True)
     result = run(
         config,
         tickers=tickers,

@@ -3,8 +3,9 @@
 # xử lý trường hợp enabled=false bằng giá trị fallback (xem docs/ARCHITECTURE.md).
 
 universe:
-  name: "VN100_sample"
-  size: 100
+  name: "vn30_sample"
+  size: 25
+  file: "data/universe/vn30_sample.csv"
 
 # Nguồn dữ liệu & thứ tự fallback — xem đánh giá đầy đủ trong docs/DATA_AUDIT.md.
 # QUAN TRỌNG: data/providers/ implement 1 interface chung theo từng loại dữ liệu bên
@@ -16,6 +17,7 @@ data_sources:
     # Giá/khớp lệnh cho Tầng 2 (Regime/Kalman/OU/GARCH), gọi lại mỗi phiên.
     # Thử lần lượt theo thứ tự, nguồn lỗi/timeout thì log lại rồi thử nguồn kế tiếp.
     chain: [dnse, vnstock, cafef]
+    request_delay_ms: 250   # throttle giữa các mã OHLCV (0 = tắt; tests dùng 0)
     notes: >
       dnse = DNSE Market Data API (cần API key, hạ tầng CTCK thật -> ưu tiên nhất).
       vnstock = tự có multi-source nội bộ (VCI/TCBS/MSN) -> coi như 1 lớp fallback sẵn.

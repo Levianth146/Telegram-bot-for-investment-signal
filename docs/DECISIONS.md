@@ -47,6 +47,7 @@ số khác) — điền ngày chốt: __________
 | 2026-09-21 | Hist val live: year-end close + assumed lag đủ cho VNM/FPT (`historical_valuation_available=true`, ~5 obs) → vẫn WATCH (không ép PASS) | Không cần vá `scoring_frames` sau smoke |
 | 2026-09-21 | Ablation P0 CLI (`python -m backtest.ablation`); MC/BL vẫn **forced off** trong `_set_quant_flags` | Không flip default P1 trong `config.yaml` đến khi có số OOS đạt +0.10 Sharpe |
 | 2026-09-21 | Ablation CLI: `--with-fundamentals` → `build_scoring_schedule`; tách regime (alpha off) vs alpha; `--walk-forward` | Fundamental giữ (+0.71 Sharpe); quant single-window cắt; WF OOS mỏng — chưa flip P1 |
+| 2026-09-21 | Universe CSV + `request_delay_ms` OHLCV throttle; smoke N=10 missing 0% | Scale có kiểm soát trước full board / flip P1 |
 
 ## Log thực tế của nhóm
 
@@ -79,3 +80,10 @@ Window 2021–2024, VNM/FPT, schedule keys `2021-03-31`…`2025-03-31` (assumed 
 | 2026-09-21 | Walk-forward OOS full P0 (2 folds 2024 H1/H2) | Sharpe OOS **1.15** / CAGR 0.017 / n_trades=2 | Số OOS dương nhưng sample rất mỏng (2 trades) — **chưa đủ** để flip MC/BL; giữ quant P0 code, mở rộng universe trước khi chốt | auto |
 
 MC/BL defaults vẫn `enabled: false`. JSON: `store/ablation_p0.json`.
+
+### Scale smoke N=10 + OHLCV throttle (2026-09-21)
+
+- Universe file: `data/universe/smoke_scale10.csv` (subset of `vn30_sample.csv`); config `request_delay_ms: 250`.
+- CLI: `--universe-file` trên `sector_job` / `quarterly_job`.
+- Kết quả: sector upsert **10**/10 (~206s); quarterly 10 mã 2020–2024 OK (~3.3 phút sau sector); daily watchlist **5** PASS/WATCH (FPT,GAS,PNJ,SAB,VNM); OHLCV **6/6 missing=0%** (5 + VNINDEX); `request_delay_ms=250`; tổng pipeline ~**412s**. Không thấy rate-limit 429 trên lần này.
+- Ceiling: quarterly vẫn nặng (BCTC/năm); daily chỉ chạy watchlist đã lọc — scale 25–100 mã cần throttle + có thể tăng delay / cache OHLCV. MC/BL vẫn tắt.

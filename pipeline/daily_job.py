@@ -270,8 +270,17 @@ def main() -> None:
             f"loaded={result.get('benchmark_loaded')}"
         )
     if result["price_inputs"]:
-        print(f"ohlcv loaded: {len(result['price_inputs']['ohlcv'])}")
-        print(f"missing: {result['price_inputs']['missing']}")
+        loaded = len(result["price_inputs"]["ohlcv"])
+        missing = result["price_inputs"]["missing"] or []
+        wanted = loaded + len(missing)
+        pct = (100.0 * len(missing) / wanted) if wanted else 0.0
+        print(f"ohlcv loaded: {loaded}/{wanted} missing={len(missing)} ({pct:.1f}%)")
+        if missing:
+            print(f"missing tickers: {', '.join(missing)}")
+        delay_ms = (
+            (config.get("data_sources") or {}).get("price") or {}
+        ).get("request_delay_ms")
+        print(f"request_delay_ms: {delay_ms}")
     push = result.get("push") or {}
     if push.get("chat_ids") is not None:
         print(

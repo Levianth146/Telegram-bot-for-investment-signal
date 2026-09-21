@@ -102,6 +102,11 @@ def main() -> None:
     parser.add_argument("--config", default="pipeline/config.yaml")
     parser.add_argument("--db-path", default="store/bot.db")
     parser.add_argument("--tickers", default="", help="Comma-separated; default=watchlist")
+    parser.add_argument(
+        "--universe-file",
+        default="",
+        help="CSV of tickers (when --tickers empty; else config universe.file)",
+    )
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     config = load_config(args.config)
@@ -112,7 +117,13 @@ def main() -> None:
         print(f"  enabled: {(config.get('sector_classification') or {}).get('enabled', True)}")
         return
 
-    tickers = [t.strip() for t in args.tickers.split(",") if t.strip()]
+    from data.universe import resolve_tickers
+
+    universe_file = args.universe_file or (config.get("universe") or {}).get("file")
+    tickers = resolve_tickers(
+        tickers_csv=args.tickers,
+        universe_file=universe_file or None,
+    )
     result = run(
         config,
         tickers=tickers or None,
