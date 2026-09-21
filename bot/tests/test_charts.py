@@ -7,6 +7,7 @@ from bot.charts import (
     render_backtest_equity_curve_chart,
     render_fundamental_radar_chart,
     render_monte_carlo_distribution_chart,
+    render_price_chart,
     render_sector_overview_chart,
 )
 from store import repository
@@ -17,6 +18,36 @@ def test_fundamental_radar(tmp_path):
     path = render_fundamental_radar_chart("VNM", 70, 65, 60, 55, out)
     assert path.is_file()
     assert path.stat().st_size > 100
+
+
+def test_price_chart_from_closes(tmp_path):
+    out = tmp_path / "price.png"
+    closes = [
+        {"date": f"2024-01-{i:02d}", "close": 50.0 + i} for i in range(1, 15)
+    ]
+    path = render_price_chart("VNM", closes, out)
+    assert path.is_file()
+    assert path.stat().st_size > 100
+
+
+def test_price_bars_store_roundtrip_and_chart(tmp_path):
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    n = repository.upsert_price_bars(
+        conn,
+        [
+            {"ticker": "VNM", "date": f"2024-02-{i:02d}", "close": 60.0 + i}
+            for i in range(1, 12)
+        ],
+    )
+    assert n == 11
+    closes = repository.get_price_closes(conn, "VNM", limit_days=500)
+    conn.close()
+    assert len(closes) == 11
+    assert closes[0]["date"] <= closes[-1]["date"]
+    path = render_price_chart("VNM", closes, tmp_path / "vnm_price.png")
+    assert path.is_file()
 
 
 def test_monte_carlo_hist(tmp_path):

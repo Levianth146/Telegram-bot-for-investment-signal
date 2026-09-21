@@ -63,7 +63,13 @@ python -m bot.main                   # Khởi động bot (chỉ đọc store/)
 
 # Đăng ký Task Scheduler (chỉnh path repo cho khớp máy bạn):
 schtasks /Create /TN "VNSignalDaily" /SC WEEKLY /D MON,TUE,WED,THU,FRI /ST 15:15 /TR "powershell.exe -NoProfile -ExecutionPolicy Bypass -File D:\Projects\Telegram-bot-for-investment-signal\scripts\run_daily_pipeline.ps1" /F
+
+# Kiểm tra / chạy thử:
+schtasks /Query /TN "VNSignalDaily" /V /FO LIST
+schtasks /Run /TN "VNSignalDaily"
 ```
+
+Task ghi `signals` + `price_bars` mỗi phiên; `/chart <mã> price` chỉ cần bot đang polling cùng `DATABASE_PATH`.
 
 Bot polling (`python -m bot.main`) chạy riêng nếu muốn nhận tin ngay khi daily xong.
 

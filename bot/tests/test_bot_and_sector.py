@@ -92,11 +92,14 @@ def test_formatters_regime_and_check():
         },
     )
     assert "BUY — VNM" in msg
-    assert "① Bộ lọc cơ bản" in msg
+    assert "① Chất lượng doanh nghiệp" in msg
     assert "chung cả rổ" in msg
+    assert "eps_cagr_3y" not in msg
+    assert "kalman_slope" not in msg
+    assert "equal_weight" not in msg
     assert formatters.DISCLAIMER in msg
     welcome = formatters.format_welcome()
-    assert "/signals" in welcome and "p_bull" in welcome
+    assert "/signals" in welcome and "Khí hậu thị trường" in welcome
     sig_list = formatters.format_signals_list(
         [
             {
@@ -119,8 +122,9 @@ def test_formatters_regime_and_check():
             },
         ]
     )
-    assert "Regime thị trường" in sig_list
-    assert "score=" in sig_list
+    assert "Khí hậu thị trường" in sig_list
+    assert "điểm=" in sig_list
+    assert "σ̂" not in sig_list
     assert "VNM" in sig_list and "FPT" in sig_list
     assert formatters.format_signals_list([])
     assert "Watchlist" in formatters.format_watchlist(
