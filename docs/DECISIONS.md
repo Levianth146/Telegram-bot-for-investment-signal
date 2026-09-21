@@ -95,3 +95,20 @@ MC/BL defaults vẫn `enabled: false`. JSON: `store/ablation_p0.json`.
 - Config: `data_sources.price.cache_ohlcv: true`, `cache_dir: data/cache` (đã trong `.gitignore` qua `data/cache/*`).
 - Key file: `ohlcv_{TICKER}_{start}_{end}.csv` — reuse cùng cửa sổ = hit; cache hit **không** sleep throttle.
 - Ceiling: cache chỉ cho giá daily Quant; **không** thay PIT BCTC / assumed lag. MC/BL vẫn `enabled: false`.
+
+### VN30 sample live smoke + OOS dày hơn (2026-09-21)
+
+- Universe: `data/universe/vn30_sample.csv` (25 mã, config `universe.file`).
+- Quarterly 2019–2024 → watchlist **16** PASS/WATCH; daily: **16** signals, OHLCV **17/17 missing=0%**, actions BUY=4 / SELL=7 / WATCH=5; paper opened=3.
+- Ops push trước đó: `sent=1` (1 subscriber) — xem dòng ops live path.
+- Ablation rộng hơn (4 mã FPT,VNM,HPG,GAS; 2021–2024; `signal_every=42`; `scripts/run_ablation_quiet.py` + `--walk-forward`) → JSON `store/ablation_vn30_scale4.json`:
+
+| Ngày | Tầng / OOS | Kết quả | Quyết định | Người chốt |
+|---|---|---|---|---|
+| 2026-09-21 | B0 buy&hold 4 mã | Sharpe **0.67** / CAGR 0.13 | Baseline | auto |
+| 2026-09-21 | +fundamental PIT | Sharpe **0.74** (Δ **+0.065**) | Cắt ngưỡng trên sample này (< +0.10); lần VNM/FPT trước vẫn KEEP | auto |
+| 2026-09-21 | +alpha | Sharpe **−0.35** (Δ **−1.09**); n_trades=**5** (dày hơn 2 trades cũ) | Cắt khỏi bản chính | auto |
+| 2026-09-21 | +risk | Δ **+0.00** vs alpha | Không flip thêm | auto |
+| 2026-09-21 | WF OOS 2 folds 2024 | Sharpe OOS **0.90** / CAGR 0.015 / n_trades=**1** | Vẫn mỏng OOS — **không** flip MC/BL | auto |
+
+MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
