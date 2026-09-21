@@ -18,6 +18,8 @@ data_sources:
     # Thử lần lượt theo thứ tự, nguồn lỗi/timeout thì log lại rồi thử nguồn kế tiếp.
     chain: [dnse, vnstock, cafef]
     request_delay_ms: 250   # throttle giữa các mã OHLCV (0 = tắt; tests dùng 0)
+    cache_ohlcv: true       # CSV dưới cache_dir; hit theo ticker+start+end
+    cache_dir: "data/cache"
     notes: >
       dnse = DNSE Market Data API (cần API key, hạ tầng CTCK thật -> ưu tiên nhất).
       vnstock = tự có multi-source nội bộ (VCI/TCBS/MSN) -> coi như 1 lớp fallback sẵn.
