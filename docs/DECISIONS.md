@@ -53,6 +53,8 @@ số khác) — điền ngày chốt: __________
 | 2026-09-21 | Bot UX: `/signals` chú thích regime chung + hiện score/σ̂; `/start` hướng dẫn; p_bull/size đồng nhất = thiết kế P0 (không bug) | Equal-weight + regime VNINDEX; MC/BL vẫn off |
 | 2026-09-21 | Universe V1 = **HOSE + HNX only** (`universe.allowed_exchanges`); UPCOM out of scope — filter qua `sector_mapping.market` | Không crawl/score UPCOM; unmapped/`VN` giữ nếu CSV curated |
 | 2026-09-21 | `sector_job` chuẩn hoá `market` via vnstock `Listing.symbols_by_exchange` + `normalize_exchange`; không ghi `VN` mơ hồ | Phục vụ filter `allowed_exchanges`; lịch daily: `scripts/run_daily_pipeline.ps1` |
+| 2026-09-21 | `/chart <mã> price`: `price_bars` do daily_job ghi; bot chỉ đọc store → PNG | Không vendor trong handler; risk/prob/ta vẫn stub |
+| 2026-09-21 | Bot UX plain-VI: `/check` `/signals` `/regime` bỏ jargon module; schtasks `VNSignalDaily` 15:15 T2–T6 | Chart lỗi cũng nói tiếng người dùng |
 
 ## Log thực tế của nhóm
 

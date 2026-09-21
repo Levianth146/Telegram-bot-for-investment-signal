@@ -100,6 +100,21 @@ def render_price_regime_chart(
     return _save(fig, out)
 
 
+def render_price_chart(
+    ticker: str,
+    closes: Sequence[Mapping[str, Any]],
+    out_path: str | Path,
+) -> Path:
+    """Close-only chart từ ``store.price_bars`` (không Kalman/regime — bot V1)."""
+    return render_price_regime_chart(
+        ticker,
+        list(closes),
+        kalman_trend=[],
+        regime_history=[],
+        out_path=out_path,
+    )
+
+
 def render_garch_risk_band_chart(
     ticker: str,
     price_history: list[dict],

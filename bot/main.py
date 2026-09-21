@@ -227,7 +227,11 @@ def build_application(token: str):
         """Render PNG from store-ready inputs; default chart = fundamental radar."""
         from telegram import InputFile
 
-        from bot.charts import ChartDataError, render_fundamental_radar_chart
+        from bot.charts import (
+            ChartDataError,
+            render_fundamental_radar_chart,
+            render_price_chart,
+        )
 
         if not context.args:
             await update.message.reply_text(
@@ -243,7 +247,10 @@ def build_application(token: str):
             if kind == "fundamental":
                 _, fund = read_signal_and_fundamental(ticker)
                 if not fund:
-                    raise ChartDataError(f"No fundamental_scores for {ticker}")
+                    raise ChartDataError(
+                        f"Chưa có điểm cơ bản cho {ticker}. "
+                        f"Đợi sau kỳ lọc doanh nghiệp (quý) rồi thử lại."
+                    )
                 path = render_fundamental_radar_chart(
                     ticker,
                     float(fund.get("growth_score") or float("nan")),
@@ -252,11 +259,23 @@ def build_application(token: str):
                     float(fund.get("valuation_score") or float("nan")),
                     out,
                 )
+            elif kind == "price":
+                conn = _conn()
+                try:
+                    closes = repository.get_price_closes(conn, ticker, limit_days=500)
+                finally:
+                    conn.close()
+                if len(closes) < 2:
+                    raise ChartDataError(
+                        f"Chưa có đủ lịch sử giá cho {ticker}. "
+                        f"Biểu đồ sẽ có sau khi pipeline phiên chạy xong "
+                        f"(thường sau 15:00 ngày giao dịch)."
+                    )
+                path = render_price_chart(ticker, closes, out)
             else:
                 await update.message.reply_text(
-                    f"Chart loại `{kind}` cần chuỗi giá/sigma/MC đã lưu sẵn "
-                    f"(chưa có bảng history trong store V1). "
-                    f"Dùng /chart {ticker} fundamental.\n\n"
+                    f"Loại biểu đồ `{kind}` chưa mở trong bản này. "
+                    f"Dùng /chart {ticker} fundamental hoặc /chart {ticker} price.\n\n"
                     + formatters.DISCLAIMER
                 )
                 return

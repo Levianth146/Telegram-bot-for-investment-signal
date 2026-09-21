@@ -73,8 +73,11 @@ def test_daily_job_run_with_synthetic_closes(tmp_path):
     assert len(result["signals"]) == 2
     assert {r["ticker"] for r in result["signals"]} == {"AAA", "BBB"}
     assert result["benchmark_loaded"] is True
+    assert result["price_bars_upserted"] > 0
     conn = repository.get_connection(str(db))
     stored = repository.get_latest_signals(conn, "2024-06-28")
+    closes_aaa = repository.get_price_closes(conn, "AAA", limit_days=500)
     conn.close()
     assert len(stored) == 2
     assert {r["ticker"] for r in stored} == {"AAA", "BBB"}
+    assert len(closes_aaa) >= 2

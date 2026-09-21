@@ -470,3 +470,82 @@ def get_active_subscribers(conn: sqlite3.Connection) -> list[int]:
         "SELECT chat_id FROM subscribers WHERE is_active = 1 ORDER BY chat_id"
     )
     return [int(r["chat_id"]) for r in cur.fetchall()]
+
+
+def upsert_price_bars(conn: sqlite3.Connection, bars: list[dict]) -> int:
+    """Batch upsert OHLCV/close cho /chart price (pipeline ghi, bot đọc)."""
+    if not bars:
+        return 0
+    sql = """
+        INSERT INTO price_bars (ticker, date, open, high, low, close, volume)
+        VALUES (:ticker, :date, :open, :high, :low, :close, :volume)
+        ON CONFLICT(ticker, date) DO UPDATE SET
+            open=excluded.open,
+            high=excluded.high,
+            low=excluded.low,
+            close=excluded.close,
+            volume=excluded.volume
+    """
+    rows: list[dict] = []
+    for bar in bars:
+        ticker = str(bar.get("ticker") or "").strip().upper()
+        day = str(bar.get("date") or "")[:10]
+        close = bar.get("close")
+        if not ticker or not day or close is None:
+            continue
+        try:
+            close_f = float(close)
+        except (TypeError, ValueError):
+            continue
+        rows.append(
+            {
+                "ticker": ticker,
+                "date": day,
+                "open": bar.get("open"),
+                "high": bar.get("high"),
+                "low": bar.get("low"),
+                "close": close_f,
+                "volume": bar.get("volume"),
+            }
+        )
+    if not rows:
+        return 0
+    conn.executemany(sql, rows)
+    conn.commit()
+    return len(rows)
+
+
+def get_price_closes(
+    conn: sqlite3.Connection,
+    ticker: str,
+    *,
+    limit_days: int | None = 500,
+) -> list[dict]:
+    """Chuỗi close ascending theo date — input ``render_price_chart`` / regime chart."""
+    ticker_u = str(ticker).strip().upper()
+    if limit_days is None or limit_days <= 0:
+        cur = conn.execute(
+            """
+            SELECT date, close, open, high, low, volume
+            FROM price_bars
+            WHERE ticker = ?
+            ORDER BY date ASC
+            """,
+            (ticker_u,),
+        )
+    else:
+        cur = conn.execute(
+            """
+            SELECT date, close, open, high, low, volume
+            FROM (
+                SELECT date, close, open, high, low, volume
+                FROM price_bars
+                WHERE ticker = ?
+                ORDER BY date DESC
+                LIMIT ?
+            )
+            ORDER BY date ASC
+            """,
+            (ticker_u, int(limit_days)),
+        )
+    return [dict(r) for r in cur.fetchall()]

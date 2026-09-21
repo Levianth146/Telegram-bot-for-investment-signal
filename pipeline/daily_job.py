@@ -108,6 +108,74 @@ def prepare_price_inputs(
     }
 
 
+def bars_from_price_inputs(price_inputs: dict[str, Any] | None) -> list[dict]:
+    """Chuyển OHLCV frames (hoặc close series) → rows ``price_bars``."""
+    if not price_inputs:
+        return []
+    bars: list[dict] = []
+    ohlcv = price_inputs.get("ohlcv") or {}
+    for ticker, frame in ohlcv.items():
+        if frame is None:
+            continue
+        try:
+            import pandas as pd
+
+            df = frame if isinstance(frame, pd.DataFrame) else None
+        except Exception:  # noqa: BLE001
+            df = None
+        if df is None or df.empty or "date" not in getattr(df, "columns", []):
+            continue
+        ticker_u = str(ticker).strip().upper()
+        for _, row in df.iterrows():
+            day = str(row.get("date") or "")[:10]
+            close = row.get("close")
+            if not day or close is None:
+                continue
+            try:
+                close_f = float(close)
+            except (TypeError, ValueError):
+                continue
+            bars.append(
+                {
+                    "ticker": ticker_u,
+                    "date": day,
+                    "open": row.get("open"),
+                    "high": row.get("high"),
+                    "low": row.get("low"),
+                    "close": close_f,
+                    "volume": row.get("volume"),
+                }
+            )
+    if bars:
+        return bars
+
+    # Fallback: close series only
+    for ticker, series in (price_inputs.get("close_series") or {}).items():
+        if series is None:
+            continue
+        ticker_u = str(ticker).strip().upper()
+        try:
+            import pandas as pd
+
+            s = pd.to_numeric(series, errors="coerce").dropna()
+        except Exception:  # noqa: BLE001
+            continue
+        for idx, val in s.items():
+            day = idx.isoformat()[:10] if hasattr(idx, "isoformat") else str(idx)[:10]
+            bars.append(
+                {
+                    "ticker": ticker_u,
+                    "date": day,
+                    "open": None,
+                    "high": None,
+                    "low": None,
+                    "close": float(val),
+                    "volume": None,
+                }
+            )
+    return bars
+
+
 def _maybe_push_signals(signals: list[dict], chat_ids: list[int]) -> dict[str, Any]:
     """Notify active subscribers after signals are persisted (ARCHITECTURE)."""
     from bot.formatters import format_signals_list
@@ -210,31 +278,43 @@ def run(
 
     push_result: dict[str, Any] = {"chat_ids": [], "sent": 0}
     paper_result: dict[str, Any] = {"opened": 0, "closed": 0, "skipped": 0}
-    if persist and signals:
+    price_bars_n = 0
+    if persist:
+        # Ghi price_bars dù không có signal (phục vụ /chart price)
+        bar_rows = bars_from_price_inputs(price_inputs)
+        if not bar_rows and series:
+            bar_rows = bars_from_price_inputs(
+                {"ohlcv": {}, "close_series": series}
+            )
         conn = repository.get_connection(db_path)
         try:
             repository.init_schema(conn)
-            repository.upsert_signals(conn, signals)
-            chat_ids = repository.get_active_subscribers(conn)
-            # Paper positions from last close (no model fit)
-            entry_prices = {}
-            for ticker, close in (series or {}).items():
-                if close is None or len(close) == 0:
-                    continue
-                try:
-                    entry_prices[str(ticker).upper()] = float(
-                        pd_to_last_close(close)
-                    )
-                except (TypeError, ValueError):
-                    continue
-            from pipeline.paper_positions import sync_positions_from_signals
+            if bar_rows:
+                price_bars_n = repository.upsert_price_bars(conn, bar_rows)
+            if signals:
+                repository.upsert_signals(conn, signals)
+                chat_ids = repository.get_active_subscribers(conn)
+                # Paper positions from last close (no model fit)
+                entry_prices = {}
+                for ticker, close in (series or {}).items():
+                    if close is None or len(close) == 0:
+                        continue
+                    try:
+                        entry_prices[str(ticker).upper()] = float(
+                            pd_to_last_close(close)
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                from pipeline.paper_positions import sync_positions_from_signals
 
-            paper_result = sync_positions_from_signals(
-                conn, signals, entry_price_by_ticker=entry_prices
-            )
+                paper_result = sync_positions_from_signals(
+                    conn, signals, entry_price_by_ticker=entry_prices
+                )
+            else:
+                chat_ids = []
         finally:
             conn.close()
-        if push:
+        if push and signals:
             push_result = _maybe_push_signals(signals, chat_ids)
 
     return {
@@ -243,6 +323,7 @@ def run(
         "signals": signals,
         "push": push_result,
         "paper_positions": paper_result,
+        "price_bars_upserted": price_bars_n,
         "benchmark": benchmark,
         "benchmark_loaded": bool(
             benchmark and series and benchmark in series

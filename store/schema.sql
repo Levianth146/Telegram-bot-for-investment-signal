@@ -109,3 +109,17 @@ CREATE TABLE IF NOT EXISTS sector_mapping (
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions (status);
 CREATE INDEX IF NOT EXISTS idx_backtest_scope ON backtest_results (scope, run_at);
 CREATE INDEX IF NOT EXISTS idx_sector_industry ON sector_mapping (sector, industry);
+
+-- Giá đóng cửa (và OHLCV nếu có) do pipeline/daily_job ghi — bot /chart price chỉ ĐỌC.
+CREATE TABLE IF NOT EXISTS price_bars (
+    ticker              TEXT NOT NULL,
+    date                DATE NOT NULL,
+    open                REAL,
+    high                REAL,
+    low                 REAL,
+    close               REAL NOT NULL,
+    volume              REAL,
+    PRIMARY KEY (ticker, date)
+);
+
+CREATE INDEX IF NOT EXISTS idx_price_bars_ticker_date ON price_bars (ticker, date DESC);
