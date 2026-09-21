@@ -132,6 +132,11 @@ def build_application(token: str):
         await update.message.reply_text(formatters.format_regime_message(p_bull, as_of))
 
     async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        from telegram import InputFile
+
+        from bot.charts import ChartDataError, render_price_chart
+        from bot.ta_reference import ta_indicators_from_closes
+
         if not context.args:
             await update.message.reply_text(
                 "Cú pháp: /check <mã>\n"
@@ -139,17 +144,47 @@ def build_application(token: str):
                 "Lệnh này mở 4 khối giải thích cho một mã (cơ bản, regime, alpha, risk)."
             )
             return
-        ticker = context.args[0]
+        ticker = context.args[0].strip().upper()
         signal, fund = read_signal_and_fundamental(ticker)
         if signal is None:
             await update.message.reply_text(
-                f"Chưa có signal cho {ticker.upper()} trong store.\n\n"
+                f"Chưa có tín hiệu phiên cho {ticker}.\n"
+                f"Đợi pipeline daily chạy xong rồi thử lại.\n\n"
                 + formatters.DISCLAIMER
             )
             return
-        await update.message.reply_text(
-            formatters.format_signal_message(signal, fund)
+
+        conn = _conn()
+        try:
+            sector = repository.get_sector_for_ticker(conn, ticker)
+            closes = repository.get_price_closes(conn, ticker, limit_days=120)
+        finally:
+            conn.close()
+
+        meta = {}
+        if sector:
+            meta = {
+                "market": sector.get("market"),
+                "industry": sector.get("industry"),
+            }
+        ta = ta_indicators_from_closes(closes)
+        text = formatters.format_signal_message(
+            signal, fund, ta_indicators=ta, meta=meta
         )
+        await update.message.reply_text(text)
+
+        # Gửi PNG giá nếu đã có đủ bars (không gọi vendor)
+        if len(closes) >= 2:
+            out = Path("store/charts") / f"{ticker}_price.png"
+            try:
+                path = render_price_chart(ticker, closes, out)
+            except ChartDataError:
+                return
+            with path.open("rb") as handle:
+                await update.message.reply_photo(
+                    photo=InputFile(handle, filename=path.name),
+                    caption=f"{ticker} — giá gần đây\n\n{formatters.DISCLAIMER}",
+                )
 
     async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         conn = _conn()

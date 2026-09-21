@@ -132,3 +132,9 @@ MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
 | 2026-09-21 | WF OOS 2 folds 2024 | Sharpe OOS **1.07** / CAGR 0.024 / n_trades=**1** | OOS vẫn mỏng — **không** flip MC/BL | auto |
 
 MC/BL defaults vẫn `enabled: false`.
+
+### /check §9.7 polish + hose_liquid_35 live (2026-09-21)
+
+- UX: banner khuyến nghị, header sàn/ngành, CTA `/chart`; khối TA reference từ `price_bars` (RSI/MA/Vol) — **chỉ hiển thị**, không vào score/size.
+- Quarterly `hose_liquid_35` 2021–2024 → watchlist **22** (PASS 7 / WATCH 15); daily: **22** signals, OHLCV **23/23 missing=0%**, `price_bars` 23 mã.
+- MC/BL vẫn `enabled: false`.

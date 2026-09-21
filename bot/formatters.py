@@ -11,7 +11,7 @@ mọi chỉ số CORE trong tin nhắn bot.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Mapping
 
 # Mã nội bộ (framework) — chỉ dùng trong code/test, không đưa ra tin nhắn bot.
 HEADLINE_METRICS = {
@@ -40,6 +40,12 @@ _ACTION_VI = {
     "BUY": "Gợi ý mua / giữ nghiêng mua",
     "SELL": "Gợi ý giảm / tránh",
     "WATCH": "Theo dõi — chưa đủ tín hiệu rõ",
+}
+
+_ACTION_BANNER = {
+    "BUY": "🟢 KHUYẾN NGHỊ: MUA",
+    "SELL": "🔴 KHUYẾN NGHỊ: GIẢM / TRÁNH",
+    "WATCH": "🟡 KHUYẾN NGHỊ: THEO DÕI",
 }
 
 
@@ -287,9 +293,12 @@ def format_signal_message(
     signal_row: dict,
     fundamental_row: dict | None = None,
     ta_indicators: dict | None = None,
+    *,
+    meta: Mapping[str, Any] | None = None,
 ) -> str:
     """Ghép mẫu tin nhắn đầy đủ theo mục 9.7 (+ 4 khối /check) — giọng người dùng."""
     fundamental_row = fundamental_row or {}
+    meta = dict(meta or {})
     reason = _reason_payload(signal_row)
     ticker = signal_row.get("ticker", "?")
     action = str(signal_row.get("action", "WATCH")).upper()
@@ -314,8 +323,20 @@ def format_signal_message(
         f"{float(weight) * 100:.1f}%" if weight is not None else size_pct
     )
 
+    market = meta.get("market") or ""
+    industry = meta.get("industry") or ""
+    header_bits = [str(ticker)]
+    if market:
+        header_bits.append(f"({market})")
+    if industry and str(industry).upper() not in {"UNKNOWN", "NONE"}:
+        header_bits.append(f"— {industry}")
+    title = " ".join(header_bits)
+
     lines = [
-        f"{action} — {ticker}{f' | {day}' if day else ''}",
+        title,
+        f"Snapshot phiên: {day}" if day else "Snapshot: (chưa có ngày)",
+        "",
+        _ACTION_BANNER.get(action, f"KHUYẾN NGHỊ: {action}"),
         translate_action(action),
         "",
         "① Chất lượng doanh nghiệp (bộ lọc cơ bản)",
@@ -363,7 +384,15 @@ def format_signal_message(
     if ta_block:
         lines.extend(["", ta_block])
 
-    lines.extend(["", DISCLAIMER])
+    lines.extend(
+        [
+            "",
+            f"📈 Biểu đồ giá: /chart {ticker} price",
+            f"📊 Radar cơ bản: /chart {ticker} fundamental",
+            "",
+            DISCLAIMER,
+        ]
+    )
     return "\n".join(lines)
 
 

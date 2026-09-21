@@ -90,10 +90,15 @@ def test_formatters_regime_and_check():
             "safety_score": 60,
             "valuation_score": 55,
         },
+        ta_indicators={"rsi_14": 55.0, "ma_trend": "MA20 trên MA50 (ngắn hạn nghiêng tăng)"},
+        meta={"market": "HOSE", "industry": "Thực phẩm"},
     )
-    assert "BUY — VNM" in msg
+    assert "VNM" in msg and "HOSE" in msg
+    assert "KHUYẾN NGHỊ: MUA" in msg
     assert "① Chất lượng doanh nghiệp" in msg
     assert "chung cả rổ" in msg
+    assert "Tham khảo thêm" in msg and "RSI(14)" in msg
+    assert "/chart VNM price" in msg
     assert "eps_cagr_3y" not in msg
     assert "kalman_slope" not in msg
     assert "equal_weight" not in msg
