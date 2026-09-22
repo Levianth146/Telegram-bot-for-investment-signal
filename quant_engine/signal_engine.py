@@ -25,6 +25,7 @@ from quant_engine.portfolio.black_litterman import (
 from quant_engine.regime import fit_or_fallback_regime
 from quant_engine.risk.garch import (
     fit_or_fallback_sigma,
+    inverse_vol_normalize_weights,
     position_size,
     stop_loss_price,
 )
@@ -103,18 +104,55 @@ def _decide_action(
     bear_threshold: float,
     min_tstat: float,
     fundamental_view: str | None = None,
+    alpha_method: str = "kalman_slope",
+    half_life: float | None = None,
+    max_ou_half_life: float = 60.0,
 ) -> str:
-    """Quyết định BUY/SELL/WATCH; WATCH Fundamental không bao giờ ra BUY."""
-    if pd.isna(alpha_eff) or pd.isna(tstat):
-        action = "WATCH"
-    elif p_bull >= bull_threshold and alpha_eff > 0 and tstat >= min_tstat:
-        action = "BUY"
-    elif p_bull <= bear_threshold or (alpha_eff < 0 and tstat <= -min_tstat):
-        action = "SELL"
-    else:
-        action = "WATCH"
-    # Cap: Fundamental WATCH/FAIL → không BUY chính thức (ban_phac §1.1).
+    """Quyết định BUY/SELL/WATCH theo regime + alpha method (long-only V1).
+
+    - Bull: Kalman slope + tstat → BUY/SELL
+    - Neutral: OU edge dương + half-life hợp lệ → BUY; âm → SELL
+    - Bear: không mở long mới (SELL nếu alpha âm, else WATCH)
+    - Cap Fundamental WATCH/FAIL → không BUY
+    """
     view = str(fundamental_view or "").strip().upper()
+    method = str(alpha_method or "kalman_slope")
+
+    if pd.isna(alpha_eff):
+        action = "WATCH"
+    elif p_bull <= bear_threshold:
+        # Bear: không mở long mới
+        action = "SELL" if (not pd.isna(alpha_eff) and alpha_eff < 0) else "WATCH"
+    elif p_bull >= bull_threshold:
+        # Bull / trending — Kalman
+        if alpha_eff > 0 and (
+            method != "kalman_slope" or (not pd.isna(tstat) and tstat >= min_tstat)
+        ):
+            action = "BUY"
+        elif alpha_eff < 0 and (
+            method != "kalman_slope" or (not pd.isna(tstat) and tstat <= -min_tstat)
+        ):
+            action = "SELL"
+        else:
+            action = "WATCH"
+    else:
+        # Neutral / sideway — OU mean-reversion
+        hl_ok = (
+            half_life is not None
+            and not pd.isna(half_life)
+            and 0 < float(half_life) <= float(max_ou_half_life)
+        )
+        if method == "ou_residual" and hl_ok and alpha_eff > 0:
+            action = "BUY"
+        elif method == "ou_residual" and (alpha_eff < 0 or not hl_ok):
+            action = "SELL" if alpha_eff < 0 else "WATCH"
+        elif alpha_eff > 0 and not pd.isna(tstat) and tstat >= min_tstat:
+            action = "BUY"
+        elif alpha_eff < 0 and not pd.isna(tstat) and tstat <= -min_tstat:
+            action = "SELL"
+        else:
+            action = "WATCH"
+
     if view in {"WATCH", "FAIL"} and action == "BUY":
         return "WATCH"
     return action
@@ -128,6 +166,7 @@ def generate_signals(
     index_ticker: str | None = None,
     signal_tickers: list[str] | None = None,
     config: Mapping[str, Any] | None = None,
+    regime_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate one signals row per ticker (schema.sql contract).
 
@@ -144,6 +183,9 @@ def generate_signals(
         except the benchmark when ``index_ticker`` is set and distinct.
     config:
         Pipeline config fragment (reads ``quant_engine`` block).
+    regime_cache:
+        Optional memo ``{(as_of, benchmark, n_returns): probabilities}`` — tránh
+        fit Markov trùng trong cùng experiment khi cùng cửa sổ expanding.
     """
     if not close_by_ticker:
         return []
@@ -195,13 +237,21 @@ def generate_signals(
     if not tickers:
         return []
 
-    # Regime on benchmark returns
+    # Regime on benchmark returns (chuỗi rỗng → p_bull=0.5, không crash)
     p_bull = 0.5
     regime_method = "disabled"
     if regime_enabled and regime_benchmark and regime_benchmark in close_by_ticker:
         index_returns = _log_returns(close_by_ticker[regime_benchmark])
-        regime_pack = fit_or_fallback_regime(index_returns)
-        probs = regime_pack["probabilities"]
+        n_rets = int(len(index_returns))
+        cache_key = (str(as_of_date), str(regime_benchmark), n_rets)
+        probs: Mapping[str, Any] | None = None
+        if regime_cache is not None and cache_key in regime_cache:
+            probs = regime_cache[cache_key]
+        else:
+            regime_pack = fit_or_fallback_regime(index_returns)
+            probs = regime_pack["probabilities"]
+            if regime_cache is not None:
+                regime_cache[cache_key] = probs
         p_bull = float(probs.get("bull", 0.5))
         regime_method = str(probs.get("method", "unknown"))
 
@@ -244,6 +294,37 @@ def generate_signals(
     else:
         weights = equal_weight_fallback(tickers)
         weight_method = "equal_weight" if not bl_enabled else "equal_weight_bl_fallback"
+
+    # Precompute sigma cho inverse-vol sizing (Option B V1)
+    sigma_by_ticker: dict[str, float] = {}
+    risk_by_ticker: dict[str, dict[str, Any]] = {}
+    for ticker in tickers:
+        close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
+        if len(close) < 30:
+            continue
+        returns = _log_returns(close)
+        if garch_enabled:
+            risk = fit_or_fallback_sigma(returns)
+        else:
+            risk = {
+                "sigma_hat": float(returns.iloc[-20:].std(ddof=1))
+                if len(returns) >= 2
+                else float("nan"),
+                "method": "disabled_rolling",
+            }
+        risk_by_ticker[ticker] = risk
+        sigma_hat = risk.get("sigma_hat")
+        if sigma_hat is not None and not pd.isna(sigma_hat) and float(sigma_hat) > 0:
+            sigma_by_ticker[ticker] = float(sigma_hat)
+
+    if garch_enabled and sigma_by_ticker:
+        risk_weights = inverse_vol_normalize_weights(
+            sigma_by_ticker, w_max=w_max, target_sum=1.0
+        )
+        size_method = "inverse_vol_normalize"
+    else:
+        risk_weights = {}
+        size_method = "legacy_sigma_target"
 
     hawkes_mult = 1.0
     if hawkes_enabled:
@@ -290,7 +371,6 @@ def generate_signals(
             continue
 
         entry_price = float(close.iloc[-1])
-        returns = _log_returns(close)
         pack = alpha_packs.get(ticker) or _compute_alpha_pack(
             close,
             fund=scores.get(ticker) or {},
@@ -304,20 +384,23 @@ def generate_signals(
         growth = pack["growth"]
         quality = pack["quality"]
 
-        if garch_enabled:
-            risk = fit_or_fallback_sigma(returns)
-        else:
-            risk = {
-                "sigma_hat": float(returns.iloc[-20:].std(ddof=1)),
-                "method": "disabled_rolling",
-            }
+        risk = risk_by_ticker.get(ticker) or {
+            "sigma_hat": float("nan"),
+            "method": "missing",
+        }
         sigma_hat = risk["sigma_hat"]
-        size = position_size(sigma_hat, sigma_target, w_max=w_max)
+        if size_method == "inverse_vol_normalize":
+            size = float(risk_weights.get(ticker, 0.0))
+        else:
+            size = position_size(sigma_hat, sigma_target, w_max=w_max)
+        # BL / equal-weight overlay: không vượt portfolio weight × hawkes
         size = min(size, float(weights.get(ticker, w_max))) * float(hawkes_mult)
         stop = stop_loss_price(entry_price, sigma_hat, k=stop_k)
 
         fund_row = scores.get(ticker) or {}
-        fund_view = str(fund_row.get("fundamental_view") or "").upper() or None
+        fund_view = str(
+            fund_row.get("fundamental_view") or fund_row.get("classification") or ""
+        ).upper() or None
         tstat_for_action = (
             tstat
             if alpha_method == "kalman_slope"
@@ -331,6 +414,8 @@ def generate_signals(
             bear_threshold=bear_threshold,
             min_tstat=min_tstat,
             fundamental_view=None,
+            alpha_method=alpha_method,
+            half_life=half_life,
         )
         action = _decide_action(
             p_bull=p_bull,
@@ -340,6 +425,8 @@ def generate_signals(
             bear_threshold=bear_threshold,
             min_tstat=min_tstat,
             fundamental_view=fund_view,
+            alpha_method=alpha_method,
+            half_life=half_life,
         )
 
         reason = {
@@ -351,6 +438,7 @@ def generate_signals(
             "ou_half_life": half_life,
             "kalman_level_last": pack.get("kalman_level_last"),
             "sigma_method": risk.get("method"),
+            "size_method": size_method,
             "weight_method": weight_method,
             "portfolio_weight": float(weights.get(ticker, 0.0)),
             "hawkes_size_mult": float(hawkes_mult),

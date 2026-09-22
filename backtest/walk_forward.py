@@ -121,12 +121,45 @@ def run_walk_forward(
         oos_trades.extend(result["trades"])
 
     pooled = compute_metrics(oos_equity, oos_trades, config)
+    fold_sharpes: list[float] = []
+    for fold in folds:
+        raw = (fold.get("metrics") or {}).get("sharpe")
+        if raw is None:
+            continue
+        try:
+            val = float(raw)
+        except (TypeError, ValueError):
+            continue
+        if val == val:  # not NaN
+            fold_sharpes.append(val)
+    n_folds = len(folds)
+    if fold_sharpes:
+        mean_fs = float(sum(fold_sharpes) / len(fold_sharpes))
+        if len(fold_sharpes) >= 2:
+            var = sum((x - mean_fs) ** 2 for x in fold_sharpes) / (
+                len(fold_sharpes) - 1
+            )
+            std_fs = float(var**0.5)
+        else:
+            std_fs = 0.0
+    else:
+        mean_fs = None
+        std_fs = None
+    pooled = dict(pooled)
+    pooled["n_folds"] = n_folds
+    pooled["fold_sharpes"] = fold_sharpes
+    pooled["fold_sharpe_mean"] = mean_fs
+    pooled["fold_sharpe_std"] = std_fs
     return {
         "windows": windows,
         "folds": folds,
         "equity_curve": oos_equity,
         "trades": oos_trades,
         "metrics": pooled,
+        "n_folds": n_folds,
+        "fold_sharpes": fold_sharpes,
+        "fold_sharpe_mean": mean_fs,
+        "fold_sharpe_std": std_fs,
     }
 
 

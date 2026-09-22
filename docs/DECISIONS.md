@@ -277,3 +277,83 @@ Spot-check: `filed_at`/`as_of` max **2026-03-31**; **0** rows `2027-*`; `sector_
 - **Sizing:** tỷ trọng `/signals` + `/positions` = GARCH `position_size` (trần `w_max=0.10`) — **không** phải chia đều; BL chỉ khi `portfolio_black_litterman.enabled`. Check `CONCENTRATED_WEIGHT` / `max_position_weight_pct: 0.10` ghi vào `backtest_checks`.
 - **Chart OOS fairness:** `/backtest` equity align mọi baseline về cùng cửa sổ ngày framework OOS + rebase; wire yearly / IS–OS / turnover / checks ✅❌; persist Sortino/Calmar/`margin_bps` khi đủ dữ liệu.
 - **Copy:** `/backtest` mở đầu = nghiên cứu OOS, không cam kết lãi; denser thua B0 nói rõ là phát hiện hợp lệ.
+
+### BACKTEST_DEBUG_CHECKLIST audit + T+1 fill + report CLI (2026-09-22)
+
+Audit theo `docs/BACKTEST_DEBUG_CHECKLIST.md` (đọc code thật; **không** sửa ngưỡng alpha/regime). Log denser OOS Sharpe **−0.84** **giữ nguyên** ở trên.
+
+| # | Mục | Kết quả | Ghi chú / fix |
+|---|---|---|---|
+| P1 | BUY = long | ✅ | `engine.py`: BUY mở long, SELL đóng; `pnl = net_proceeds − cost_basis` (không đảo direction). Pytest `test_buy_opens_long_positive_pnl_on_rise`. |
+| P1 | Score sign FF ↔ alpha | ✅ | Fundamental percentile `higher_is_better`; `alpha_effective` nhân growth/quality (điểm cao → factor lớn hơn). BUY cần `alpha_eff > 0`. |
+| P2 | Fill cùng close tín hiệu | ❌→✅ **fix** | Trước: signal closes ≤ T rồi fill `px` cùng T (look-ahead). Sau: khớp **T+1**; stop vẫn cùng phiên. Pytest `test_signal_fill_is_t_plus_1`. |
+| P2 | PIT `assumed_filed_at` / lag 90d | ✅ | `pit.assumed_filed_at` + `assumed_publication_lag_days: 90`; `build_scoring_schedule` khóa theo filed_at. |
+| P2 | Watchlist lịch sử | ✅ / ⚠ | Có `scoring_schedule` = tái tạo PASS/WATCH theo thời điểm; `--no-fundamentals` / ticker cố định = survivorship — ghi rõ trên smoke. |
+| P3 | Phí / T+2 / limit | ✅ | `buy_cost_fraction`/`sell_cost_fraction` 1 lần mỗi chân; T+2 `held_days < 2`; `is_tradable_at_price_limit`. |
+| P4 | GARCH size nghịch đảo | ✅ | `position_size = min(w_max, σ_t/σ̂)`; stop gán + đóng khi `px ≤ stop`. |
+| P5 | Adjusted close | ✅ *(provider)* | `to_close_series` dùng cột `close` từ chain DNSE/vnstock/cafef — không lẫn raw/adj trong engine. |
+
+**Re-run note:** sau T+1, OOS denser cũ (−0.84) **không còn so sánh 1-1**; cần **một** lần đo lại cùng protocol nếu muốn số post-fix. **Không** cook / scale equity. MC/BL vẫn `enabled: false`.
+
+**Phase B:** `run_walk_forward` trả `n_folds`, `fold_sharpes`, `fold_sharpe_mean` / `fold_sharpe_std` (JSON + terminal ablation/report). Kéo `start_date` sớm hơn tăng fold — **≠** thử cửa sổ đến khi đẹp.
+
+**Phase C:** `scripts/run_backtest_report.py` — bảng B0/B1/B2/Framework(WF)/VN-Index/VN30 + `store/backtest_report.xlsx`.
+
+```text
+python scripts/run_backtest_report.py --universe smoke --start-date 2015-01-01 --walk-forward --signal-every 21
+# smoke nhanh:
+python scripts/run_backtest_report.py --tickers FPT,VNM,GAS --start-date 2022-01-01 --walk-forward --signal-every 42 --no-fundamentals --out-xlsx store/backtest_report_smoke.xlsx --no-persist-store
+```
+
+**Phase D (IS):** Checklist sạch sau fix T+1; **không** đổi ngưỡng live. Layer **+alpha** vẫn là drag đã log (watchlist12 / denser) — khuyến nghị: tune alpha **chỉ IS** rồi **một** lần OOS; **không** tắt alpha trong `config.yaml` khi chưa có bằng chứng IS + dòng DECISIONS. MC/BL giữ off đến gate (+0.10 Sharpe OOS, ≥30 lệnh).
+
+**Phase D xlsx spot-check (2026-09-22):** strings từ `bảng thông số chi tiết.xlsx` (không commit) khớp config: `Size = min(w_max, σ_target/σ̂)`, `Alpha_effective = raw × f(G,Q)` f∈[0.5,1.5], Markov filtered, GJR-GARCH, lag 90. **Không** đổi `sigma_target`/`w_max`/`bull_threshold`/`min_slope_tstat` ở bước này — chưa tune IS; chưa đo lại OOS denser post-T+1 (chỉ note cần 1 lần nếu muốn so sánh). Smoke báo cáo 3 mã 2022+ (post-T+1) **không** thay thế denser −0.84 và **không** phải bằng chứng lãi hợp lệ cho full sample.
+
+### Framework correctness P0/P1 + VN100 CLI (2026-09-22)
+
+Fix theo `VIBE_CODE_MASTER_PROMPT_FIX_BACKTEST_VN100` / plan — **không** retune OOS; denser Sharpe **−0.84** **giữ nguyên** phía trên.
+
+| Fix | Chi tiết |
+|---|---|
+| Schema | `_active_watchlist` → `fundamental_view` (+ alias `classification`) |
+| Stop / FAIL | Risk override `stop_hit` / `fundamental_fail_exit`; FAIL hold → SELL T+1 |
+| Ablation FF | Dynamic PIT equal-weight (không BH `end_date`) |
+| B0/B1/B2 | Cùng fee ledger + T+1 cost trên Δ vị thế; report gross/net/cost_drag |
+| OU / Bear | Neutral OU có thể BUY; bear không mở long |
+| Risk | `inverse_vol_normalize_weights` rồi cap `w_max` (không đổi config) |
+| Markov | Reject ConvergenceWarning / non-converge → `heuristic_nonconverged_markov`; turbulent = max σ² |
+| Regime Sharpe | Research display `N/A (n < min)` — không literal `None` |
+| CLI | `--universe vn100`, `--oos-start/--oos-end`, `--warmup-years`, `--signal-every` (default 1), `--with-fundamentals` |
+
+**Smoke (không phải final VN100):** 3 mã FPT/VNM/GAS, OOS 2025-06→2025-09, `signal_every=5`, no-fund, warmup 1y — Framework Total Return ≈ **+2.0%**, Sharpe ≈ **+2.45**, MDD ≈ **−1.3%**, avg exposure ≈ **15%**, n_trades=7. Ablation cùng cửa sổ không warmup: risk Sharpe ≈ **−0.50** (alpha drag vẫn thấy). **Không** kết luận edge VN100 từ smoke.
+
+```text
+# Smoke
+python scripts/run_backtest_report.py --tickers FPT,VNM,GAS --oos-start 2025-06-01 --oos-end 2025-09-01 --warmup-years 1 --signal-every 5 --no-fundamentals --no-walk-forward --no-persist-store --out-json store/backtest_final_vn100_smoke.json
+
+# Full VN100 (chậm)
+python scripts/run_backtest_report.py --universe vn100 --with-fundamentals --signal-every 1 --oos-start 2025-03-22 --oos-end 2025-09-22 --warmup-years 3 --no-walk-forward --out-json store/backtest_final_vn100_20260922.json
+```
+
+Báo cáo: `docs/BACKTEST_FINAL_REPORT.md`.
+
+### Speed-only (2026-09-22) — không đổi logic / denser −0.84 giữ
+
+Tối ưu tương đương kết quả (cùng trades/equity semantics):
+
+| Thay đổi | Chi tiết |
+|---|---|
+| FF event cache | `precompute_fundamental_states` — score 1× / `filed_at`; daily chỉ lookup |
+| Schedule year cache | `data/cache/scoring_schedule/{key}/year_{Y}.pkl` — ghi sau mỗi năm, resume Ctrl+C |
+| Loop | `_truncate` searchsorted; prev_price qua `day_pos`; regime memo optional |
+| CLI | `--refresh-fundamentals` / `--refresh-data`; `scripts/profile_backtest_smoke.py` |
+
+**Không** đổi `signal_every`, universe, thresholds, T+1/costs, Markov daily expanding. Denser OOS Sharpe **−0.84** (P1 denser) **vẫn giữ** phía trên — speed-only, không retune.
+
+```text
+# Profile
+python scripts/profile_backtest_smoke.py --out outputs/performance/profile_after.txt
+
+# VN100 warm (cache hit OHLCV + year schedule)
+python scripts/run_backtest_report.py --universe vn100 --with-fundamentals --signal-every 1 --oos-start 2025-03-22 --oos-end 2025-09-22 --warmup-years 3 --no-walk-forward --out-json store/backtest_final_vn100_20260922.json
+```

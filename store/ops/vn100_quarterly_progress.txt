@@ -1,0 +1,10 @@
+﻿# VN100 quarterly batch progress 2026-09-22T16:14:29.9349943+07:00
+# sector_job: SKIPPED full-100 (prior hung exit 4294967295); sector_mapping stays 35 rows
+batch1 exit=0 elapsed_s=298 tickers=CTS,DBC,DSE,EIB,EVF,FTS,GEE,GEX,GMD,HAG,HCM,HDB
+batch2 exit=0 elapsed_s=326 tickers=HHV,HT1,KBC,KDC,KOS,LPB,MBB,MCH,MSB,NAB,NKG,NT2
+batch3 exit=0 elapsed_s=297 tickers=NVL,OCB,PAN,PVD,PVT,SBT,SHB,SIP,SJS,SSB,SSI,STB
+batch4 exit=0 elapsed_s=327 tickers=TAL,TCB,TCH,TCX,TPB,VCB,VCG,VCI,VCK,VGC,VIB,VIX
+batch5 exit=0 elapsed_s=240 tickers=VND,VPB,VPI,VPL,VPX,VSC,VTP
+batch0 exit=0 (prior) tickers=ACB,BAF,BID,BMP,BSI,BSR,BVH,BWE,CII,CMG,CTG,CTR
+daily exit=0 signals=48 ohlcv_missing=0% as_of_watchlist=2026-03-31 PASS=13 WATCH=35
+sector_mapping=35 (full VN100 sector SKIPPED)

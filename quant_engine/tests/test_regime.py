@@ -56,6 +56,93 @@ def test_position_size_and_stop():
     assert stop_loss_price(100.0, 0.02, k=2.0) == pytest.approx(96.0)
 
 
+def test_inverse_vol_normalize_monotonic():
+    from quant_engine.risk.garch import inverse_vol_normalize_weights
+
+    # w_max đủ cao để thấy thứ tự inverse-vol trước khi bão hòa cap.
+    w = inverse_vol_normalize_weights(
+        {"A": 0.01, "B": 0.02, "C": 0.04}, w_max=0.50, target_sum=1.0
+    )
+    assert w["A"] > w["B"] > w["C"]
+    assert all(v <= 0.50 + 1e-9 for v in w.values())
+    assert sum(w.values()) <= 1.0 + 1e-9
+    # Risk-off (cap thấp) khác distribution risk-on
+    capped = inverse_vol_normalize_weights(
+        {"A": 0.01, "B": 0.02, "C": 0.04}, w_max=0.10, target_sum=1.0
+    )
+    assert capped != w
+    assert all(v <= 0.10 + 1e-9 for v in capped.values())
+
+
+def test_ou_neutral_buy_and_bear_no_buy():
+    from quant_engine.signal_engine import _decide_action
+
+    buy_ou = _decide_action(
+        p_bull=0.45,
+        alpha_eff=0.05,
+        tstat=0.0,
+        bull_threshold=0.55,
+        bear_threshold=0.35,
+        min_tstat=1.0,
+        alpha_method="ou_residual",
+        half_life=10.0,
+    )
+    assert buy_ou == "BUY"
+    sell_ou = _decide_action(
+        p_bull=0.45,
+        alpha_eff=-0.05,
+        tstat=0.0,
+        bull_threshold=0.55,
+        bear_threshold=0.35,
+        min_tstat=1.0,
+        alpha_method="ou_residual",
+        half_life=10.0,
+    )
+    assert sell_ou == "SELL"
+    bear = _decide_action(
+        p_bull=0.2,
+        alpha_eff=0.05,
+        tstat=3.0,
+        bull_threshold=0.55,
+        bear_threshold=0.35,
+        min_tstat=1.0,
+        alpha_method="kalman_slope",
+        half_life=None,
+    )
+    assert bear != "BUY"
+
+
+def test_markov_nonconverged_fallback(monkeypatch):
+    from quant_engine import regime as regime_mod
+
+    def boom(*_a, **_k):
+        raise RuntimeError("markov_mle_nonconverged")
+
+    monkeypatch.setattr(regime_mod, "fit_markov_regime", boom)
+    rets = _synthetic_close(n=300, drift=0.001).pct_change().dropna()
+    pack = regime_mod.fit_or_fallback_regime(rets)
+    assert pack["probabilities"]["method"] == "heuristic_nonconverged_markov"
+
+
+def test_label_states_turbulent_by_variance():
+    from quant_engine.regime import _label_states_by_mean_and_variance
+
+    params = pd.Series(
+        {
+            "const[0]": -0.01,
+            "const[1]": 0.00,
+            "const[2]": 0.02,
+            "sigma2[0]": 0.001,
+            "sigma2[1]": 0.050,  # highest var → turbulent
+            "sigma2[2]": 0.002,
+        }
+    )
+    labels = _label_states_by_mean_and_variance(params, 3)
+    assert labels[1] == "turbulent"
+    assert labels[0] == "bear"
+    assert labels[2] == "bull"
+
+
 def test_regime_heuristic_fallback():
     rets = _synthetic_close(drift=0.002).pct_change().dropna()
     pack = fit_or_fallback_regime(rets)
@@ -63,6 +150,15 @@ def test_regime_heuristic_fallback():
     assert abs(sum(probs[k] for k in ("bull", "bear", "turbulent")) - 1.0) < 1e-9
     fallback = filtered_regime_probability(None, rets)
     assert "bull" in fallback
+
+
+def test_regime_empty_returns_neutral():
+    """Benchmark chưa có giá / 1 điểm → returns rỗng: không raise, p_bull=0.5."""
+    pack = fit_or_fallback_regime(pd.Series(dtype=float))
+    probs = pack["probabilities"]
+    assert probs["method"] == "empty_returns_neutral"
+    assert probs["bull"] == pytest.approx(0.5)
+    assert pack["model"] is None
 
 
 def test_equal_weight_fallback():

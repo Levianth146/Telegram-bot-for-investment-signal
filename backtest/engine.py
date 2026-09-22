@@ -29,7 +29,12 @@ def _as_date_index(series: pd.Series) -> pd.Series:
 
 
 def _truncate(series: pd.Series, as_of: str) -> pd.Series:
-    return series.loc[series.index <= as_of]
+    """Cắt closes ≤ as_of (ISO date sort = chronological)."""
+    if series.empty:
+        return series
+    # searchsorted + iloc: tránh boolean mask copy mỗi ngày.
+    end = series.index.searchsorted(as_of, side="right")
+    return series.iloc[:end]
 
 
 def _trading_days(
@@ -47,27 +52,29 @@ def _business_days_between(start: str, end: str, calendar: list[str]) -> int:
     return sum(1 for d in calendar if start < d <= end)
 
 
-def _active_watchlist(
-    scoring_schedule: Mapping[str, Mapping[str, pd.DataFrame]] | None,
-    as_of: str,
-    fallback_tickers: list[str],
-    config: dict,
-) -> tuple[list[str], dict[str, dict]]:
-    """Latest fundamental run with filed_at <= as_of → PASS/WATCH + scores."""
-    if not scoring_schedule:
-        return list(fallback_tickers), {}
+# Risk override: không cho Quant ghi đè cho đến khi SELL khớp.
+_RISK_OVERRIDE_REASONS = frozenset({"stop_hit", "fundamental_fail_exit"})
 
-    eligible = sorted(d for d in scoring_schedule if d <= as_of)
-    if not eligible:
-        return [], {}
+# Kiểu cache FF: filed_at → (watchlist PASS/WATCH, scores dict).
+_FFState = tuple[list[str], dict[str, dict]]
 
-    filed_at = eligible[-1]
-    frames = scoring_schedule[filed_at]
+
+def _score_frames_to_watchlist(
+    frames: Mapping[str, pd.DataFrame],
+    filed_at: str,
+) -> _FFState:
+    """Chạy ``score_current_universe`` một lần trên frames của một filed_at.
+
+    Schema canonical: ``fundamental_view`` (PASS|WATCH|FAIL) — alias
+    ``classification`` giữ tương thích ngược.
+    """
     if not frames:
         return [], {}
 
-    # Infer year window from frame rows
     sample = next(iter(frames.values()))
+    if sample is None or getattr(sample, "empty", True):
+        return [], {}
+
     years = pd.to_numeric(sample.get("year"), errors="coerce").dropna()
     end_year = int(years.max()) if not years.empty else int(filed_at[:4])
     start_year = int(years.min()) if not years.empty else end_year
@@ -82,14 +89,76 @@ def _active_watchlist(
     scores: dict[str, dict] = {}
     for _, row in keep.iterrows():
         ticker = str(row["ticker"]).strip().upper()
+        view = str(row.get("classification") or "").strip().upper()
         scores[ticker] = {
             "growth_score": row.get("growth_score"),
             "quality_score": row.get("quality_score"),
             "safety_score": row.get("safety_score"),
             "valuation_score": row.get("valuation_score"),
-            "classification": row.get("classification"),
+            "fundamental_score": row.get("fundamental_score"),
+            # Canonical cho quant_engine; classification = alias.
+            "fundamental_view": view,
+            "classification": view,
         }
     return tickers, scores
+
+
+def precompute_fundamental_states(
+    scoring_schedule: Mapping[str, Mapping[str, pd.DataFrame]] | None,
+) -> dict[str, _FFState]:
+    """Precompute ``filed_at → (watchlist, scores)`` — event-driven, không rescore mỗi ngày.
+
+    Mỗi key trong ``scoring_schedule`` chỉ gọi ``score_current_universe`` một lần.
+    Daily loop chỉ lookup latest filed_at ≤ day (tương đương semantics cũ).
+    """
+    if not scoring_schedule:
+        return {}
+    states: dict[str, _FFState] = {}
+    for filed_at in sorted(scoring_schedule.keys()):
+        frames = scoring_schedule[filed_at] or {}
+        states[str(filed_at)] = _score_frames_to_watchlist(frames, str(filed_at))
+    return states
+
+
+def _lookup_ff_state(
+    ff_states: Mapping[str, _FFState],
+    as_of: str,
+    fallback_tickers: list[str],
+) -> _FFState:
+    """Latest precomputed state với filed_at ≤ as_of."""
+    if not ff_states:
+        return list(fallback_tickers), {}
+    eligible = [d for d in ff_states if d <= as_of]
+    if not eligible:
+        return [], {}
+    return ff_states[max(eligible)]
+
+
+def _active_watchlist(
+    scoring_schedule: Mapping[str, Mapping[str, pd.DataFrame]] | None,
+    as_of: str,
+    fallback_tickers: list[str],
+    config: dict,
+    *,
+    ff_states: Mapping[str, _FFState] | None = None,
+) -> tuple[list[str], dict[str, dict]]:
+    """Latest fundamental run with filed_at <= as_of → PASS/WATCH + scores.
+
+    Nếu ``ff_states`` đã precompute → chỉ lookup (O(events)); ngược lại score
+    on-the-fly (tương thích test/call cũ).
+    """
+    if ff_states is not None:
+        return _lookup_ff_state(ff_states, as_of, fallback_tickers)
+
+    if not scoring_schedule:
+        return list(fallback_tickers), {}
+
+    eligible = sorted(d for d in scoring_schedule if d <= as_of)
+    if not eligible:
+        return [], {}
+
+    filed_at = eligible[-1]
+    return _score_frames_to_watchlist(scoring_schedule[filed_at] or {}, filed_at)
 
 
 def _price_on(series: pd.Series, day: str) -> float | None:
@@ -101,7 +170,23 @@ def _price_on(series: pd.Series, day: str) -> float | None:
     return float(value)
 
 
-def _prev_price(series: pd.Series, day: str, calendar: list[str]) -> float | None:
+def _prev_price(
+    series: pd.Series,
+    day: str,
+    calendar: list[str],
+    *,
+    day_pos: Mapping[str, int] | None = None,
+) -> float | None:
+    """Giá phiên trước trên calendar (có mặt trong series)."""
+    if day_pos is not None:
+        i = day_pos.get(day)
+        if i is None:
+            return None
+        for j in range(i - 1, -1, -1):
+            prev_d = calendar[j]
+            if prev_d in series.index:
+                return _price_on(series, prev_d)
+        return None
     earlier = [d for d in calendar if d < day and d in series.index]
     if not earlier:
         return None
@@ -120,6 +205,9 @@ def run_backtest(
     signal_tickers: list[str] | None = None,
 ) -> dict:
     """Run Tầng 1 + Tầng 2 over history with point-in-time closes.
+
+    Tín hiệu dùng closes ≤ ngày T; khớp lệnh từ phiên T+1 (tránh look-ahead
+    fill cùng close đã dùng để tính signal). Stop-loss khớp cùng phiên chạm.
 
     Parameters
     ----------
@@ -157,6 +245,17 @@ def run_backtest(
             "signals": [],
         }
 
+    # Precompute FF states một lần / filed_at (event-driven; daily chỉ lookup).
+    ff_states = (
+        precompute_fundamental_states(scoring_schedule)
+        if scoring_schedule is not None
+        else None
+    )
+    # Map ngày → vị trí trên calendar (prev_price O(1) thay vì scan list).
+    day_pos = {d: i for i, d in enumerate(calendar)}
+    # Regime memo trong một run: cùng as_of + cùng benchmark end → không fit lại.
+    regime_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
+
     cash = float(initial_equity)
     # ticker -> {qty_value at entry, entry_price, stop, entry_date, shares}
     positions: dict[str, dict[str, Any]] = {}
@@ -166,6 +265,9 @@ def run_backtest(
     watchlist: list[str] = list(closes.keys())
     fund_scores: dict[str, dict] = {}
     last_signals: dict[str, dict] = {}
+    # Ngày tín hiệu được sinh; khớp lệnh chỉ từ phiên kế tiếp (T+1 fill).
+    # None = khớp ngay (dùng cho stop_hit cùng phiên).
+    signal_asof: dict[str, str | None] = {}
 
     def mark_equity(day: str) -> float:
         total = cash
@@ -178,14 +280,41 @@ def run_backtest(
                 total += pos["market_value"]
         return total
 
+    def _signal_actionable(ticker: str, day: str) -> bool:
+        """True nếu tín hiệu đã sẵn sàng khớp (T+1 hoặc stop cùng ngày)."""
+        if ticker not in last_signals:
+            return False
+        asof = signal_asof.get(ticker)
+        if asof is None:
+            return True  # stop_hit: khớp ngay phiên chạm stop
+        return day > asof
+
     for i, day in enumerate(calendar):
         # --- Fundamental refresh (point-in-time filed_at) ---
         watchlist, fund_scores = _active_watchlist(
-            scoring_schedule, day, list(closes.keys()), cfg
+            scoring_schedule,
+            day,
+            list(closes.keys()),
+            cfg,
+            ff_states=ff_states,
         )
-        # Drop positions no longer on watchlist via forced review (keep until SELL)
+        # Held + FAIL/excluded → schedule forced EXIT (T+1), không kẹt vô hạn.
+        if scoring_schedule is not None:
+            for ticker in list(positions):
+                if ticker in watchlist:
+                    continue
+                existing = last_signals.get(ticker) or {}
+                if str(existing.get("reason") or "") in _RISK_OVERRIDE_REASONS:
+                    continue
+                last_signals[ticker] = {
+                    "action": "SELL",
+                    "size": 0.0,
+                    "stop": positions[ticker].get("stop"),
+                    "reason": "fundamental_fail_exit",
+                }
+                signal_asof[ticker] = day  # khớp Close T+1
 
-        # --- Stops ---
+        # --- Stops (khớp cùng phiên khi close ≤ stop; không chờ T+1) ---
         for ticker in list(positions):
             pos = positions[ticker]
             px = _price_on(closes[ticker], day)
@@ -199,38 +328,19 @@ def run_backtest(
                     "stop": stop,
                     "reason": "stop_hit",
                 }
+                signal_asof[ticker] = None
 
-        # --- Quant signals (filtered closes ≤ day) ---
-        if i % max(int(signal_every_n_days), 1) == 0 and watchlist:
-            truncated = {
-                t: _truncate(closes[t], day)
-                for t in closes
-                if not _truncate(closes[t], day).empty
-            }
-            emit = [
-                t
-                for t in (signal_tickers if signal_tickers is not None else watchlist)
-                if str(t).strip().upper() in truncated
-            ]
-            if truncated and emit:
-                day_signals = generate_signals(
-                    truncated,
-                    as_of_date=day,
-                    fundamental_scores=fund_scores,
-                    config=cfg,
-                    signal_tickers=emit,
-                )
-                all_signals.extend(day_signals)
-                for row in day_signals:
-                    last_signals[str(row["ticker"]).upper()] = row
-
-        # --- Execute ---
+        # --- Execute (trước khi sinh tín hiệu mới — tránh fill cùng close dùng tính signal) ---
         equity_before = mark_equity(day)
         for ticker in list(dict.fromkeys([*watchlist, *positions.keys()])):
             if ticker not in closes:
                 continue
+            if not _signal_actionable(ticker, day):
+                continue
             px = _price_on(closes[ticker], day)
-            prev = _prev_price(closes[ticker], day, calendar)
+            prev = _prev_price(
+                closes[ticker], day, calendar, day_pos=day_pos
+            )
             if px is None:
                 continue
             signal = last_signals.get(ticker) or {}
@@ -238,7 +348,7 @@ def run_backtest(
 
             tradable = is_tradable_at_price_limit(px, prev, limit_pct=limit_pct)
 
-            # Close
+            # Close — long-only: SELL đóng vị thế mua (direction +1 trong PnL)
             if ticker in positions and action == "SELL":
                 pos = positions[ticker]
                 held_days = _business_days_between(pos["entry_date"], day, calendar)
@@ -265,9 +375,12 @@ def run_backtest(
                     }
                 )
                 del positions[ticker]
+                # Xóa risk override sau khi khớp SELL.
+                last_signals.pop(ticker, None)
+                signal_asof.pop(ticker, None)
                 continue
 
-            # Open
+            # Open — BUY = long (không short); FAIL/excluded không mở mới.
             if (
                 ticker not in positions
                 and action == "BUY"
@@ -311,7 +424,51 @@ def run_backtest(
                     }
                 )
 
-        equity_curve.append({"date": day, "equity": mark_equity(day)})
+        # --- Quant signals (closes ≤ day); khớp lệnh từ phiên T+1 ---
+        if i % max(int(signal_every_n_days), 1) == 0 and watchlist:
+            # Truncate một lần / ticker (tránh double _truncate + boolean copy).
+            truncated: dict[str, pd.Series] = {}
+            for t, series in closes.items():
+                cut = _truncate(series, day)
+                if not cut.empty:
+                    truncated[t] = cut
+            emit = [
+                t
+                for t in (signal_tickers if signal_tickers is not None else watchlist)
+                if str(t).strip().upper() in truncated
+            ]
+            if truncated and emit:
+                day_signals = generate_signals(
+                    truncated,
+                    as_of_date=day,
+                    fundamental_scores=fund_scores,
+                    config=cfg,
+                    signal_tickers=emit,
+                    regime_cache=regime_memo,
+                )
+                all_signals.extend(day_signals)
+                for row in day_signals:
+                    tkr = str(row["ticker"]).upper()
+                    # Hard risk override: stop / FAIL exit không bị Quant ghi đè.
+                    existing_reason = str(
+                        (last_signals.get(tkr) or {}).get("reason") or ""
+                    )
+                    if existing_reason in _RISK_OVERRIDE_REASONS:
+                        continue
+                    last_signals[tkr] = row
+                    signal_asof[tkr] = day
+
+        invested = sum(float(p.get("market_value") or 0.0) for p in positions.values())
+        eq = mark_equity(day)
+        equity_curve.append(
+            {
+                "date": day,
+                "equity": eq,
+                "cash": cash,
+                "exposure": (invested / eq) if eq > 0 else 0.0,
+                "n_positions": len(positions),
+            }
+        )
 
     regime_by_date: dict[str, float] = {}
     for sig in all_signals:
@@ -329,6 +486,7 @@ def run_backtest(
         cfg,
         signals=all_signals,
         regime_by_date=regime_by_date,
+        force_research_metrics=True,
     )
     return {
         "equity_curve": equity_curve,

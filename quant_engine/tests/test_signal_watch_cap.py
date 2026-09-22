@@ -25,6 +25,7 @@ def test_decide_action_caps_buy_when_fundamental_watch():
         bear_threshold=0.35,
         min_tstat=1.0,
         fundamental_view=None,
+        alpha_method="kalman_slope",
     )
     assert buy == "BUY"
     capped = _decide_action(
@@ -35,8 +36,23 @@ def test_decide_action_caps_buy_when_fundamental_watch():
         bear_threshold=0.35,
         min_tstat=1.0,
         fundamental_view="WATCH",
+        alpha_method="kalman_slope",
     )
     assert capped == "WATCH"
+
+
+def test_decide_action_fail_never_buy():
+    action = _decide_action(
+        p_bull=0.9,
+        alpha_eff=0.05,
+        tstat=3.0,
+        bull_threshold=0.55,
+        bear_threshold=0.35,
+        min_tstat=1.0,
+        fundamental_view="FAIL",
+        alpha_method="kalman_slope",
+    )
+    assert action != "BUY"
 
 
 def test_generate_signals_watch_never_buy():

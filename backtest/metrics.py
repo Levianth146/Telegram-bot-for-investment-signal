@@ -171,14 +171,27 @@ def regime_conditional_sharpe(
     *,
     bull_threshold: float = 0.55,
     bear_threshold: float = 0.35,
-) -> tuple[float, float]:
-    """Sharpe of equity returns split by P(bull) regime buckets."""
+    min_obs: int = 5,
+) -> dict[str, Any]:
+    """Sharpe theo regime bucket; thiếu mẫu → None + display N/A (không literal None chart)."""
+    empty = {
+        "sharpe_bull": None,
+        "sharpe_bear": None,
+        "sharpe_neutral": None,
+        "n_bull": 0,
+        "n_bear": 0,
+        "n_neutral": 0,
+        "display_bull": f"N/A (n < {min_obs})",
+        "display_bear": f"N/A (n < {min_obs})",
+        "display_neutral": f"N/A (n < {min_obs})",
+    }
     equity = _equity_series(equity_curve)
     if len(equity) < 3 or not regime_by_date:
-        return float("nan"), float("nan")
+        return empty
     rets = equity.pct_change().dropna()
-    bull_rets = []
-    bear_rets = []
+    bull_rets: list[float] = []
+    bear_rets: list[float] = []
+    neutral_rets: list[float] = []
     for day, ret in rets.items():
         p = regime_by_date.get(str(day))
         if p is None:
@@ -187,9 +200,75 @@ def regime_conditional_sharpe(
             bull_rets.append(float(ret))
         elif p <= bear_threshold:
             bear_rets.append(float(ret))
-    bull = sharpe_ratio(pd.Series(bull_rets)) if len(bull_rets) >= 5 else float("nan")
-    bear = sharpe_ratio(pd.Series(bear_rets)) if len(bear_rets) >= 5 else float("nan")
-    return bull, bear
+        else:
+            neutral_rets.append(float(ret))
+
+    def _pack(vals: list[float]) -> tuple[float | None, str]:
+        if len(vals) < min_obs:
+            return None, f"N/A (n < {min_obs})"
+        s = sharpe_ratio(pd.Series(vals))
+        if s is None or (isinstance(s, float) and (pd.isna(s) or s != s)):
+            return None, f"N/A (n={len(vals)})"
+        return float(s), f"{float(s):.2f} (n={len(vals)})"
+
+    bull_s, bull_d = _pack(bull_rets)
+    bear_s, bear_d = _pack(bear_rets)
+    neu_s, neu_d = _pack(neutral_rets)
+    return {
+        "sharpe_bull": bull_s,
+        "sharpe_bear": bear_s,
+        "sharpe_neutral": neu_s,
+        "n_bull": len(bull_rets),
+        "n_bear": len(bear_rets),
+        "n_neutral": len(neutral_rets),
+        "display_bull": bull_d,
+        "display_bear": bear_d,
+        "display_neutral": neu_d,
+    }
+
+
+def exposure_stats(equity_curve: list[dict]) -> dict[str, Any]:
+    """Thống kê exposure/cash từ equity_curve (nếu có field exposure)."""
+    if not equity_curve:
+        return {}
+    exposures = [
+        float(p["exposure"])
+        for p in equity_curve
+        if p.get("exposure") is not None and not pd.isna(p.get("exposure"))
+    ]
+    n_pos = [
+        int(p["n_positions"])
+        for p in equity_curve
+        if p.get("n_positions") is not None
+    ]
+    if not exposures:
+        return {}
+    arr = np.array(exposures, dtype=float)
+    cash_heavy = float(np.mean(arr < 0.20))
+    return {
+        "avg_exposure": float(arr.mean()),
+        "median_exposure": float(np.median(arr)),
+        "max_exposure": float(arr.max()),
+        "pct_sessions_cash_gt_80": cash_heavy,
+        "avg_n_positions": float(np.mean(n_pos)) if n_pos else None,
+        "max_n_positions": int(max(n_pos)) if n_pos else None,
+    }
+
+
+def total_return(equity: pd.Series) -> float:
+    if len(equity) < 2:
+        return float("nan")
+    start, end = float(equity.iloc[0]), float(equity.iloc[-1])
+    if start <= 0:
+        return float("nan")
+    return float(end / start - 1.0)
+
+
+def format_regime_sharpe_display(value: float | None, n: int, min_obs: int = 5) -> str:
+    """Không render literal None trong report."""
+    if value is None or (isinstance(value, float) and pd.isna(value)):
+        return f"N/A (n < {min_obs})" if n < min_obs else f"N/A (n={n})"
+    return f"{float(value):.2f}"
 
 
 def compute_metrics(
@@ -199,8 +278,12 @@ def compute_metrics(
     *,
     signals: list[dict] | None = None,
     regime_by_date: Mapping[str, float] | None = None,
+    force_research_metrics: bool = False,
 ) -> dict[str, Any]:
-    """CORE metrics always; add-ons / P1 respect ``backtest.metrics.*.enabled``."""
+    """CORE metrics always; add-ons / P1 respect ``backtest.metrics.*.enabled``.
+
+    ``force_research_metrics=True`` bật regime Sharpe cho report (không đổi live config).
+    """
     cfg = dict(config or {})
     bt = dict(cfg.get("backtest") or {})
     flags = dict(bt.get("metrics") or {})
@@ -214,13 +297,39 @@ def compute_metrics(
 
     metrics: dict[str, Any] = {
         "cagr": cagr_v,
+        "total_return": total_return(equity),
         "sharpe": sharpe_ratio(rets),
         "max_drawdown": mdd,
         "win_rate": win_rate(closed),
         "n_trades": len(closed),
     }
+    metrics.update(exposure_stats(equity_curve))
+
+    # Cost attribution từ closed trades
+    if closed:
+        gross_pnl = sum(float(t.get("pnl") or 0) for t in closed)
+        # Approximate: cost ≈ notional * (entry fee + exit fee) — ledger already net
+        metrics["net_pnl"] = gross_pnl
+        metrics["avg_holding_days"] = float(
+            np.mean(
+                [
+                    max(
+                        (
+                            pd.Timestamp(str(t["exit_date"]))
+                            - pd.Timestamp(str(t["entry_date"]))
+                        ).days,
+                        0,
+                    )
+                    for t in closed
+                    if t.get("entry_date") and t.get("exit_date")
+                ]
+                or [float("nan")]
+            )
+        )
 
     def _enabled(name: str, default: bool = True) -> bool:
+        if force_research_metrics and name == "regime_conditional_sharpe":
+            return True
         block = flags.get(name) or {}
         if isinstance(block, dict):
             return bool(block.get("enabled", default))
@@ -249,17 +358,24 @@ def compute_metrics(
         _, note = calibrate_cvar95(list(signals or []), realized)
         metrics["cvar95_calibration_note"] = note
 
-    if _enabled("regime_conditional_sharpe", default=False):
+    if _enabled("regime_conditional_sharpe", default=False) or force_research_metrics:
         bull_th = float(qcfg.get("bull_threshold", 0.55))
         bear_th = float(qcfg.get("bear_threshold", 0.35))
-        bull_s, bear_s = regime_conditional_sharpe(
+        pack = regime_conditional_sharpe(
             equity_curve,
             regime_by_date or {},
             bull_threshold=bull_th,
             bear_threshold=bear_th,
         )
-        metrics["sharpe_bull_regime"] = bull_s
-        metrics["sharpe_bear_regime"] = bear_s
+        metrics["sharpe_bull_regime"] = pack["sharpe_bull"]
+        metrics["sharpe_bear_regime"] = pack["sharpe_bear"]
+        metrics["sharpe_neutral_regime"] = pack["sharpe_neutral"]
+        metrics["n_sessions_bull"] = pack["n_bull"]
+        metrics["n_sessions_bear"] = pack["n_bear"]
+        metrics["n_sessions_neutral"] = pack["n_neutral"]
+        metrics["sharpe_bull_display"] = pack["display_bull"]
+        metrics["sharpe_bear_display"] = pack["display_bear"]
+        metrics["sharpe_neutral_display"] = pack["display_neutral"]
 
     return metrics
 

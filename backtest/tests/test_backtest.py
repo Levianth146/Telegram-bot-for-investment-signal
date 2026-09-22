@@ -123,6 +123,110 @@ def test_pit_no_future_closes(monkeypatch):
     assert seen_max
 
 
+def test_signal_fill_is_t_plus_1(monkeypatch):
+    """BUY/SELL từ quant không khớp cùng close đã dùng để tính tín hiệu."""
+    closes = {
+        "AAA": _close(n=80, drift=0.002, seed=11),
+        "BBB": _close(n=80, drift=0.001, seed=12),
+    }
+    signal_days: dict[str, str] = {}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        emit = kwargs.get("signal_tickers") or list(close_by_ticker)
+        rows = []
+        for ticker in emit:
+            t = str(ticker).upper()
+            if t in signal_days:
+                continue
+            signal_days[t] = as_of_date
+            rows.append(
+                {
+                    "date": as_of_date,
+                    "ticker": t,
+                    "action": "BUY",
+                    "size": 0.2,
+                    "stop": None,
+                    "reason": "unit_test_buy",
+                }
+            )
+        return rows
+
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    start, end = closes["AAA"].index[5], closes["AAA"].index[-1]
+    result = run_backtest(
+        _config(),
+        start,
+        end,
+        close_by_ticker=closes,
+        signal_every_n_days=5,
+    )
+    buys = [
+        t
+        for t in result["trades"]
+        if t.get("reason") == "signal_buy" and t.get("entry_date")
+    ]
+    assert buys, "expected at least one BUY fill"
+    for trade in buys:
+        ticker = trade["ticker"]
+        gen = signal_days[ticker]
+        assert trade["entry_date"] > gen, (
+            f"{ticker}: fill {trade['entry_date']} must be after signal {gen}"
+        )
+
+
+def test_buy_opens_long_positive_pnl_on_rise(monkeypatch):
+    """BUY = long: giá tăng → pnl đóng lệnh > 0 (sau phí nhỏ)."""
+    dates = pd.bdate_range("2023-01-02", periods=40).strftime("%Y-%m-%d")
+    # Giá tăng mạnh sau ngày tín hiệu để PnL long dương rõ.
+    prices = [100.0] * 10 + [100.0 + i for i in range(30)]
+    closes = {"AAA": pd.Series(prices, index=list(dates), name="close")}
+    fired = {"n": 0}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        if fired["n"] > 0:
+            # Sau khi đã BUY: SELL khi đã cầm đủ lâu (engine T+2).
+            if as_of_date >= dates[20]:
+                return [
+                    {
+                        "date": as_of_date,
+                        "ticker": "AAA",
+                        "action": "SELL",
+                        "size": 0.0,
+                        "stop": None,
+                        "reason": "unit_test_sell",
+                    }
+                ]
+            return []
+        fired["n"] += 1
+        return [
+            {
+                "date": as_of_date,
+                "ticker": "AAA",
+                "action": "BUY",
+                "size": 0.5,
+                "stop": None,
+                "reason": "unit_test_buy",
+            }
+        ]
+
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    result = run_backtest(
+        {
+            "quant_engine": {"benchmark": "AAA"},
+            "backtest": {
+                "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+            },
+        },
+        dates[5],
+        dates[-1],
+        close_by_ticker=closes,
+        signal_every_n_days=3,
+    )
+    closed = [t for t in result["trades"] if t.get("exit_date") and t.get("pnl") is not None]
+    assert closed, "expected a closed long trade"
+    assert closed[0]["pnl"] > 0
+
+
 def test_costs_reduce_closed_trade_pnl():
     gross = 0.05
     cheap = apply_transaction_costs(gross, 0.0, 0.0)
@@ -154,6 +258,10 @@ def test_run_walk_forward_synthetic():
     )
     assert out["folds"]
     assert "sharpe" in out["metrics"]
+    assert out["n_folds"] == len(out["folds"])
+    assert "fold_sharpe_mean" in out
+    assert "fold_sharpe_std" in out
+    assert out["metrics"].get("n_folds") == out["n_folds"]
 
 
 def test_ablation_decide_keep_cut():
@@ -182,7 +290,7 @@ def test_ablation_signal_closes_excludes_benchmark():
     assert "VNINDEX" not in subset
 
 
-def test_build_scoring_schedule_keys(monkeypatch):
+def test_build_scoring_schedule_keys(monkeypatch, tmp_path):
     from backtest import ablation as ablation_mod
     from data.ingest.pit import assumed_filed_at
 
@@ -214,6 +322,8 @@ def test_build_scoring_schedule_keys(monkeypatch):
         cfg,
         lookback_years=3,
         include_prior_year=True,
+        cache_dir=tmp_path,
+        refresh=True,
     )
     # years 2020, 2021, 2022 (prior + window)
     assert assumed_filed_at(2020, 90) in schedule
@@ -222,6 +332,23 @@ def test_build_scoring_schedule_keys(monkeypatch):
     assert calls  # at least one provider build
     # lookback 3 for year 2022 → start 2020
     assert (2020, 2022) in calls
+
+    # Cache hit: cùng key → 0 provider calls bổ sung; frames keys giống.
+    calls.clear()
+    schedule2 = ablation_mod.build_scoring_schedule(
+        ["VNM"],
+        "2021-01-01",
+        "2022-12-31",
+        cfg,
+        lookback_years=3,
+        include_prior_year=True,
+        cache_dir=tmp_path,
+        refresh=False,
+    )
+    assert calls == []
+    assert set(schedule2.keys()) == set(schedule.keys())
+    for k in schedule:
+        assert set(schedule2[k].keys()) == set(schedule[k].keys())
 
 
 def test_ablation_regime_alpha_flags_differ(monkeypatch):
@@ -487,8 +614,466 @@ def test_b1_b2_baseline_runners_finite():
             30 * np.exp(np.cumsum(rng.normal(0.0004, 0.022, 300))), index=dates
         ),
     }
-    cfg = {"quant_engine": {"sigma_target": 0.02}}
+    cfg = {
+        "quant_engine": {"sigma_target": 0.02},
+        "backtest": {"cost": {"tax_sell_pct": 0.001, "fee_roundtrip_pct": 0.003}},
+    }
     b1 = _b1_ta_result(closes, "2022-01-01", "2023-12-31", cfg)
     b2 = _b2_canslim_result(closes, "2022-01-01", "2023-12-31", cfg)
     assert len(b1["equity_curve"]) > 50
     assert len(b2["equity_curve"]) > 50
+    # Net <= gross after costs
+    assert b1["metrics"]["net_total_return"] <= b1["metrics"]["gross_total_return"] + 1e-9
+    assert b2["metrics"]["net_total_return"] <= b2["metrics"]["gross_total_return"] + 1e-9
+
+
+def test_stop_overrides_quant_buy(monkeypatch):
+    """Stop hit + Quant BUY cùng ngày → final order vẫn SELL."""
+    dates = pd.bdate_range("2023-01-02", periods=40).strftime("%Y-%m-%d")
+    # Giá giảm dần để chạm stop sau khi vào lệnh.
+    prices = [100.0] * 8 + [100.0 - i * 2 for i in range(32)]
+    closes = {"AAA": pd.Series(prices, index=list(dates), name="close")}
+    phase = {"n": 0}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        phase["n"] += 1
+        if phase["n"] == 1:
+            return [
+                {
+                    "date": as_of_date,
+                    "ticker": "AAA",
+                    "action": "BUY",
+                    "size": 0.5,
+                    "stop": 95.0,
+                    "reason": "unit_buy",
+                }
+            ]
+        # Sau khi đã hold: cố BUY lại khi stop có thể đã hit
+        return [
+            {
+                "date": as_of_date,
+                "ticker": "AAA",
+                "action": "BUY",
+                "size": 0.5,
+                "stop": 95.0,
+                "reason": "unit_buy_override_attempt",
+            }
+        ]
+
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    result = run_backtest(
+        {
+            "quant_engine": {"benchmark": "AAA"},
+            "backtest": {
+                "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+            },
+        },
+        dates[2],
+        dates[-1],
+        close_by_ticker=closes,
+        signal_every_n_days=1,
+    )
+    stop_exits = [t for t in result["trades"] if t.get("reason") == "stop_hit"]
+    assert stop_exits, "expected stop_hit exit"
+
+
+def test_stop_overrides_quant_watch(monkeypatch):
+    """Stop hit + Quant WATCH → vẫn SELL."""
+    dates = pd.bdate_range("2023-01-02", periods=40).strftime("%Y-%m-%d")
+    prices = [100.0] * 8 + [100.0 - i * 2 for i in range(32)]
+    closes = {"AAA": pd.Series(prices, index=list(dates), name="close")}
+    phase = {"n": 0}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        phase["n"] += 1
+        if phase["n"] == 1:
+            return [
+                {
+                    "date": as_of_date,
+                    "ticker": "AAA",
+                    "action": "BUY",
+                    "size": 0.5,
+                    "stop": 95.0,
+                    "reason": "unit_buy",
+                }
+            ]
+        return [
+            {
+                "date": as_of_date,
+                "ticker": "AAA",
+                "action": "WATCH",
+                "size": 0.0,
+                "stop": 95.0,
+                "reason": "unit_watch",
+            }
+        ]
+
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    result = run_backtest(
+        {
+            "quant_engine": {"benchmark": "AAA"},
+            "backtest": {
+                "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+            },
+        },
+        dates[2],
+        dates[-1],
+        close_by_ticker=closes,
+        signal_every_n_days=1,
+    )
+    assert any(t.get("reason") == "stop_hit" for t in result["trades"])
+
+
+def test_no_stop_model_signal_normal(monkeypatch):
+    """Không stop → model BUY bình thường (T+1)."""
+    dates = pd.bdate_range("2023-01-02", periods=30).strftime("%Y-%m-%d")
+    prices = [100.0 + i * 0.5 for i in range(30)]
+    closes = {"AAA": pd.Series(prices, index=list(dates), name="close")}
+    fired = {"n": 0}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        if fired["n"] > 0:
+            return []
+        fired["n"] += 1
+        return [
+            {
+                "date": as_of_date,
+                "ticker": "AAA",
+                "action": "BUY",
+                "size": 0.4,
+                "stop": None,
+                "reason": "unit_buy",
+            }
+        ]
+
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    result = run_backtest(
+        {
+            "quant_engine": {"benchmark": "AAA"},
+            "backtest": {
+                "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+            },
+        },
+        dates[2],
+        dates[-1],
+        close_by_ticker=closes,
+        signal_every_n_days=5,
+    )
+    buys = [t for t in result["trades"] if t.get("reason") == "signal_buy"]
+    assert buys
+
+
+def test_fundamental_view_schema_in_watchlist(monkeypatch):
+    """_active_watchlist phải truyền fundamental_view cho Quant."""
+    from backtest.engine import _active_watchlist
+
+    frames = {
+        "AAA": pd.DataFrame(
+            {
+                "year": [2022, 2023],
+                "ticker": ["AAA", "AAA"],
+                "revenue": [1.0, 1.1],
+            }
+        )
+    }
+    schedule = {"2024-03-31": frames}
+    seen = {}
+
+    def fake_score(frames_in, start_year, end_year, config=None):
+        df = pd.DataFrame(
+            [
+                {
+                    "ticker": "AAA",
+                    "growth_score": 70,
+                    "quality_score": 65,
+                    "safety_score": 60,
+                    "valuation_score": 55,
+                    "fundamental_score": 62,
+                    "classification": "WATCH",
+                }
+            ]
+        )
+        return df, None, None
+
+    monkeypatch.setattr("backtest.engine.score_current_universe", fake_score)
+    tickers, scores = _active_watchlist(schedule, "2024-06-01", ["AAA"], {})
+    assert "AAA" in tickers
+    assert scores["AAA"]["fundamental_view"] == "WATCH"
+    assert scores["AAA"]["classification"] == "WATCH"
+
+
+def test_fundamental_fail_exit_while_holding(monkeypatch):
+    """PASS→FAIL khi đang hold → schedule fundamental_fail_exit (T+1)."""
+    dates = pd.bdate_range("2023-01-02", periods=50).strftime("%Y-%m-%d")
+    prices = [100.0 + i * 0.2 for i in range(50)]
+    closes = {"AAA": pd.Series(prices, index=list(dates), name="close")}
+
+    # scoring_schedule: early PASS, later empty keep → FAIL/excluded
+    call_day = {"d": None}
+
+    def fake_watchlist(scoring_schedule, as_of, fallback, config, **_kwargs):
+        call_day["d"] = as_of
+        # Before mid: on watchlist; after: empty (FAIL)
+        if as_of < dates[25]:
+            return ["AAA"], {
+                "AAA": {
+                    "fundamental_view": "PASS",
+                    "classification": "PASS",
+                    "growth_score": 70,
+                    "quality_score": 70,
+                }
+            }
+        return [], {}
+
+    phase = {"n": 0}
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        phase["n"] += 1
+        if phase["n"] == 1:
+            return [
+                {
+                    "date": as_of_date,
+                    "ticker": "AAA",
+                    "action": "BUY",
+                    "size": 0.5,
+                    "stop": None,
+                    "reason": "unit_buy",
+                }
+            ]
+        return []
+
+    monkeypatch.setattr("backtest.engine._active_watchlist", fake_watchlist)
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    result = run_backtest(
+        {
+            "quant_engine": {"benchmark": "AAA"},
+            "backtest": {
+                "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+            },
+        },
+        dates[5],
+        dates[-1],
+        close_by_ticker=closes,
+        scoring_schedule={"2023-01-01": {"dummy": pd.DataFrame()}},
+        signal_every_n_days=3,
+    )
+    fail_exits = [
+        t for t in result["trades"] if t.get("reason") == "fundamental_fail_exit"
+    ]
+    assert fail_exits, "expected fundamental_fail_exit after FAIL refresh"
+
+
+def test_dynamic_fundamental_no_end_date_leak(monkeypatch):
+    """Ablation fundamental không dùng watchlist end_date cho cả kỳ."""
+    from backtest import ablation as ablation_mod
+
+    dates = pd.bdate_range("2023-01-02", periods=40).strftime("%Y-%m-%d")
+    closes = {
+        "AAA": pd.Series([100.0 + i for i in range(40)], index=list(dates)),
+        "BBB": pd.Series([50.0 + i * 0.5 for i in range(40)], index=list(dates)),
+    }
+    seen_asof: list[str] = []
+
+    def fake_wl(schedule, as_of, fallback, config, **_kwargs):
+        seen_asof.append(as_of)
+        # Early: only AAA; late: AAA+BBB — nếu leak end_date thì luôn cả hai
+        if as_of < dates[20]:
+            return ["AAA"], {"AAA": {"fundamental_view": "PASS", "classification": "PASS"}}
+        return ["AAA", "BBB"], {
+            "AAA": {"fundamental_view": "PASS", "classification": "PASS"},
+            "BBB": {"fundamental_view": "WATCH", "classification": "WATCH"},
+        }
+
+    monkeypatch.setattr("backtest.engine._active_watchlist", fake_wl)
+    result = ablation_mod._dynamic_fundamental_result(
+        closes,
+        dates[0],
+        dates[-1],
+        {"backtest": {"cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0}}},
+        scoring_schedule={"2023-01-01": {}},
+    )
+    assert result["equity_curve"]
+    assert any(d < dates[20] for d in seen_asof)
+    assert any(d >= dates[20] for d in seen_asof)
+    # Phải gọi nhiều ngày, không chỉ end_date
+    assert len(set(seen_asof)) > 5
+
+
+def test_ff_precompute_matches_daily_rescore(monkeypatch):
+    """Precompute filed_at → state phải giống rescore mỗi ngày (cùng frames)."""
+    from backtest.engine import (
+        _active_watchlist,
+        precompute_fundamental_states,
+    )
+
+    frames = {
+        "AAA": pd.DataFrame(
+            {
+                "year": [2022, 2023],
+                "ticker": ["AAA", "AAA"],
+                "revenue": [1.0, 1.1],
+            }
+        ),
+        "BBB": pd.DataFrame(
+            {
+                "year": [2022, 2023],
+                "ticker": ["BBB", "BBB"],
+                "revenue": [2.0, 2.2],
+            }
+        ),
+    }
+    schedule = {
+        "2024-03-31": frames,
+        "2025-03-31": {
+            "AAA": pd.DataFrame(
+                {
+                    "year": [2023, 2024],
+                    "ticker": ["AAA", "AAA"],
+                    "revenue": [1.1, 1.2],
+                }
+            )
+        },
+    }
+    score_calls = {"n": 0}
+
+    def fake_score(frames_in, start_year, end_year, config=None):
+        score_calls["n"] += 1
+        rows = []
+        for t in frames_in:
+            rows.append(
+                {
+                    "ticker": t,
+                    "growth_score": 70,
+                    "quality_score": 65,
+                    "safety_score": 60,
+                    "valuation_score": 55,
+                    "fundamental_score": 62,
+                    "classification": "WATCH" if t == "AAA" else "PASS",
+                }
+            )
+        return pd.DataFrame(rows), None, None
+
+    monkeypatch.setattr("backtest.engine.score_current_universe", fake_score)
+    states = precompute_fundamental_states(schedule)
+    assert score_calls["n"] == len(schedule)
+
+    days = ["2024-01-01", "2024-06-01", "2025-06-01"]
+    for day in days:
+        cached = _active_watchlist(
+            schedule, day, ["AAA", "BBB"], {}, ff_states=states
+        )
+        daily = _active_watchlist(schedule, day, ["AAA", "BBB"], {})
+        assert cached[0] == daily[0]
+        assert set(cached[1].keys()) == set(daily[1].keys())
+        for t in cached[1]:
+            assert cached[1][t]["classification"] == daily[1][t]["classification"]
+
+
+def test_run_backtest_precompute_equiv_daily_path(monkeypatch):
+    """run_backtest với FF precompute ≡ daily rescore (trades + equity cuối)."""
+    dates = pd.bdate_range("2024-01-02", periods=60).strftime("%Y-%m-%d").tolist()
+    closes = {
+        "AAA": pd.Series(
+            [100.0 + i * 0.3 for i in range(60)], index=dates, name="close"
+        ),
+        "VNINDEX": pd.Series(
+            [1000.0 + i * 0.1 for i in range(60)], index=dates, name="close"
+        ),
+    }
+    frames = {
+        "AAA": pd.DataFrame(
+            {"year": [2022, 2023], "ticker": ["AAA", "AAA"], "revenue": [1.0, 1.1]}
+        )
+    }
+    schedule = {dates[10]: frames, dates[35]: frames}
+
+    def fake_score(frames_in, start_year, end_year, config=None):
+        return (
+            pd.DataFrame(
+                [
+                    {
+                        "ticker": "AAA",
+                        "growth_score": 70,
+                        "quality_score": 65,
+                        "safety_score": 60,
+                        "valuation_score": 55,
+                        "fundamental_score": 62,
+                        "classification": "WATCH",
+                    }
+                ]
+            ),
+            None,
+            None,
+        )
+
+    def fake_generate(close_by_ticker, *, as_of_date, **kwargs):
+        # Tín hiệu đơn giản deterministic — không phụ thuộc regime/GARCH.
+        if "AAA" not in close_by_ticker:
+            return []
+        return [
+            {
+                "date": as_of_date,
+                "ticker": "AAA",
+                "action": "BUY" if as_of_date < dates[40] else "SELL",
+                "size": 0.4,
+                "stop": None,
+                "reason": "unit_signal",
+                "p_regime": 0.6,
+            }
+        ]
+
+    monkeypatch.setattr("backtest.engine.score_current_universe", fake_score)
+    monkeypatch.setattr("backtest.engine.generate_signals", fake_generate)
+    cfg = {
+        "quant_engine": {"benchmark": "VNINDEX"},
+        "backtest": {
+            "cost": {"tax_sell_pct": 0.0, "fee_roundtrip_pct": 0.0, "limit_pct": 0.5},
+        },
+    }
+    opt = run_backtest(
+        cfg,
+        dates[0],
+        dates[-1],
+        close_by_ticker=closes,
+        scoring_schedule=schedule,
+        signal_every_n_days=5,
+        signal_tickers=["AAA"],
+    )
+    # Ép daily rescore: precompute trả None → _active_watchlist score mỗi ngày.
+    monkeypatch.setattr(
+        "backtest.engine.precompute_fundamental_states", lambda _s: None
+    )
+    daily = run_backtest(
+        cfg,
+        dates[0],
+        dates[-1],
+        close_by_ticker=closes,
+        scoring_schedule=schedule,
+        signal_every_n_days=5,
+        signal_tickers=["AAA"],
+    )
+    assert opt["metrics"]["n_trades"] == daily["metrics"]["n_trades"]
+    assert len(opt["trades"]) == len(daily["trades"])
+    for a, b in zip(opt["trades"], daily["trades"]):
+        assert a.get("entry_date") == b.get("entry_date")
+        assert a.get("exit_date") == b.get("exit_date")
+        assert a.get("ticker") == b.get("ticker")
+        assert a.get("reason") == b.get("reason")
+    assert opt["equity_curve"] and daily["equity_curve"]
+    assert abs(
+        float(opt["equity_curve"][-1]["equity"])
+        - float(daily["equity_curve"][-1]["equity"])
+    ) < 1e-9
+
+
+def test_truncate_searchsorted_matches_loc():
+    """_truncate searchsorted ≡ loc mask (ISO date index)."""
+    from backtest.engine import _truncate
+
+    idx = pd.bdate_range("2024-01-02", periods=20).strftime("%Y-%m-%d")
+    s = pd.Series(range(20), index=list(idx), dtype=float)
+    as_of = idx[10]
+    legacy = s.loc[s.index <= as_of]
+    got = _truncate(s, as_of)
+    assert list(got.index) == list(legacy.index)
+    assert list(got.values) == list(legacy.values)

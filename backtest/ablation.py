@@ -77,17 +77,29 @@ def _set_quant_flags(config: dict, *, regime: bool, alpha: bool, risk: bool) -> 
     return cfg
 
 
+def _cost_fractions(config: Mapping[str, Any] | None) -> tuple[float, float]:
+    """(buy_fee, sell_fee) từ backtest.cost — cùng ledger với engine."""
+    bt = dict((config or {}).get("backtest") or {})
+    cost = dict(bt.get("cost") or {})
+    tax_sell = float(cost.get("tax_sell_pct", 0.001))
+    fee_rt = float(cost.get("fee_roundtrip_pct", 0.003))
+    from backtest.costs import buy_cost_fraction, sell_cost_fraction
+
+    return buy_cost_fraction(fee_rt), sell_cost_fraction(tax_sell, fee_rt)
+
+
 def _buyhold_result(
     close_by_ticker: Mapping[str, Any],
     start_date: str,
     end_date: str,
     config: dict,
 ) -> dict:
-    """Equal-weight buy-and-hold of all tickers (no signals)."""
+    """Equal-weight buy-and-hold; entry cost một lần + exit cuối kỳ (fair vs engine)."""
     import pandas as pd
 
     from backtest.metrics import compute_metrics
 
+    buy_fee, sell_fee = _cost_fractions(config)
     frames = []
     for ticker, series in close_by_ticker.items():
         s = pd.to_numeric(series, errors="coerce").dropna()
@@ -101,14 +113,55 @@ def _buyhold_result(
     prices = pd.concat(frames, axis=1).sort_index().ffill().dropna(how="all")
     rets = prices.pct_change().fillna(0.0)
     port = rets.mean(axis=1)
-    equity = (1.0 + port).cumprod()
+    # Gross equity rồi haircut entry/exit một lần (nhất quán mọi baseline BH).
+    equity_gross = (1.0 + port).cumprod()
+    if len(equity_gross) == 0:
+        return {
+            "equity_curve": [],
+            "trades": [],
+            "metrics": compute_metrics([], [], config),
+            "signals": [],
+        }
+    equity = equity_gross.copy()
+    equity.iloc[0] = float(equity.iloc[0]) * (1.0 - buy_fee)
+    # Rebase sau entry haircut rồi apply path
+    if float(equity_gross.iloc[0]) > 0:
+        path = equity_gross / float(equity_gross.iloc[0])
+        equity = path * (1.0 - buy_fee)
+    equity.iloc[-1] = float(equity.iloc[-1]) * (1.0 - sell_fee)
     curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]
+    gross_end = float(equity_gross.iloc[-1] / equity_gross.iloc[0]) - 1.0 if float(equity_gross.iloc[0]) else 0.0
+    net_end = float(equity.iloc[-1]) - 1.0
+    metrics = compute_metrics(curve, [], config)
+    metrics = {
+        **metrics,
+        "gross_total_return": gross_end,
+        "net_total_return": net_end,
+        "cost_drag": gross_end - net_end,
+        "total_fees_tax": float(buy_fee + sell_fee),
+    }
     return {
         "equity_curve": curve,
         "trades": [],
-        "metrics": compute_metrics(curve, [], config),
+        "metrics": metrics,
         "signals": [],
     }
+
+
+def _apply_position_costs(
+    pos: "pd.Series",
+    gross_rets: "pd.Series",
+    buy_fee: float,
+    sell_fee: float,
+) -> "pd.Series":
+    """Trừ phí khi vị thế đổi hiệu lực (đã shift T+1 cùng gross_rets)."""
+    import pandas as pd
+
+    pos_lag = pos.shift(1).fillna(0.0)
+    pos_lag2 = pos.shift(2).fillna(0.0)
+    delta = pos_lag - pos_lag2
+    cost = delta.clip(lower=0.0) * buy_fee + (-delta.clip(upper=0.0)) * sell_fee
+    return gross_rets - cost.fillna(0.0)
 
 
 def _rsi(series, period: int = 14):
@@ -127,12 +180,14 @@ def _b1_ta_result(
     end_date: str,
     config: dict,
 ) -> dict:
-    """Baseline B1 — TA thuần: long khi EMA20>EMA50 và RSI14<70 (mục 10/11.3)."""
+    """Baseline B1 — TA thuần + cùng cost/T+1 lag như framework."""
     import pandas as pd
 
     from backtest.metrics import compute_metrics
 
+    buy_fee, sell_fee = _cost_fractions(config)
     frames = []
+    gross_frames = []
     for ticker, series in close_by_ticker.items():
         s = pd.to_numeric(series, errors="coerce").dropna()
         s.index = s.index.astype(str)
@@ -144,8 +199,11 @@ def _b1_ta_result(
         rsi = _rsi(s, 14)
         long_mask = (ema_fast > ema_slow) & (rsi < 70)
         pos = long_mask.astype(float).fillna(0.0)
-        rets = s.pct_change().fillna(0.0) * pos.shift(1).fillna(0.0)
-        frames.append(rets.rename(str(ticker).upper()))
+        pct = s.pct_change().fillna(0.0)
+        gross = pct * pos.shift(1).fillna(0.0)
+        net = _apply_position_costs(pos, gross, buy_fee, sell_fee)
+        frames.append(net.rename(str(ticker).upper()))
+        gross_frames.append(gross.rename(str(ticker).upper()))
     if not frames:
         return {
             "equity_curve": [],
@@ -154,15 +212,24 @@ def _b1_ta_result(
             "signals": [],
         }
     port = pd.concat(frames, axis=1).sort_index().fillna(0.0).mean(axis=1)
+    port_gross = pd.concat(gross_frames, axis=1).sort_index().fillna(0.0).mean(axis=1)
     equity = (1.0 + port).cumprod()
+    equity_gross = (1.0 + port_gross).cumprod()
     curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]
-    # Ước n_trades: số lần bật long trên trung bình mã
     flips = sum(
         int((f.fillna(0.0) != 0).astype(int).diff().fillna(0).abs().sum() // 2)
         for f in frames
     )
     metrics = compute_metrics(curve, [], config)
-    metrics = {**metrics, "n_trades": int(flips)}
+    g_ret = float(equity_gross.iloc[-1] / equity_gross.iloc[0] - 1.0) if len(equity_gross) else 0.0
+    n_ret = float(equity.iloc[-1] / equity.iloc[0] - 1.0) if len(equity) else 0.0
+    metrics = {
+        **metrics,
+        "n_trades": int(flips),
+        "gross_total_return": g_ret,
+        "net_total_return": n_ret,
+        "cost_drag": g_ret - n_ret,
+    }
     return {"equity_curve": curve, "trades": [], "metrics": metrics, "signals": []}
 
 
@@ -172,11 +239,12 @@ def _b2_canslim_result(
     end_date: str,
     config: dict,
 ) -> dict:
-    """Baseline B2 — CANSLIM rút gọn: mỗi tháng giữ nửa mã RS 6 tháng cao nhất."""
+    """Baseline B2 — CANSLIM rút gọn + cost khi rebalance (T+1 lag)."""
     import pandas as pd
 
     from backtest.metrics import compute_metrics
 
+    buy_fee, sell_fee = _cost_fractions(config)
     frames = []
     for ticker, series in close_by_ticker.items():
         s = pd.to_numeric(series, errors="coerce").dropna()
@@ -192,7 +260,6 @@ def _b2_canslim_result(
             "signals": [],
         }
     prices = pd.concat(frames, axis=1).sort_index().ffill()
-    # RS ~ return 126 phiên (~6 tháng giao dịch)
     rs = prices / prices.shift(126) - 1.0
     month_ends = list(prices.groupby(prices.index.str[:7]).tail(1).index)
     weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
@@ -215,11 +282,138 @@ def _b2_canslim_result(
             n_trades += len(chosen.symmetric_difference(prev_set))
             prev_set = chosen
     rets = prices.pct_change().fillna(0.0)
-    port = (rets * weights.shift(1).fillna(0.0)).sum(axis=1)
+    w_lag = weights.shift(1).fillna(0.0)
+    port_gross = (rets * w_lag).sum(axis=1)
+    # Cost trên thay đổi trọng số hiệu lực (turnover / 2 * fees)
+    w_lag2 = weights.shift(2).fillna(0.0)
+    delta_w = (w_lag - w_lag2).abs().sum(axis=1)
+    # Mua tăng + bán giảm ≈ turnover; chia đôi buy/sell fee xấp xỉ
+    cost = delta_w * ((buy_fee + sell_fee) / 2.0)
+    port = port_gross - cost.fillna(0.0)
     equity = (1.0 + port).cumprod()
+    equity_gross = (1.0 + port_gross).cumprod()
     curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]
     metrics = compute_metrics(curve, [], config)
-    metrics = {**metrics, "n_trades": int(n_trades)}
+    g_ret = float(equity_gross.iloc[-1] / equity_gross.iloc[0] - 1.0) if len(equity_gross) else 0.0
+    n_ret = float(equity.iloc[-1] / equity.iloc[0] - 1.0) if len(equity) else 0.0
+    metrics = {
+        **metrics,
+        "n_trades": int(n_trades),
+        "gross_total_return": g_ret,
+        "net_total_return": n_ret,
+        "cost_drag": g_ret - n_ret,
+    }
+    return {"equity_curve": curve, "trades": [], "metrics": metrics, "signals": []}
+
+
+def _dynamic_fundamental_result(
+    close_by_ticker: Mapping[str, Any],
+    start_date: str,
+    end_date: str,
+    config: dict,
+    scoring_schedule: Mapping[str, Any] | None,
+) -> dict:
+    """Fundamental-only: equal-weight PASS/WATCH rebalance theo PIT ngày (không look-ahead).
+
+    Trọng số ngày T áp dụng return ngày T+1. Không dùng watchlist ``end_date``.
+    """
+    import pandas as pd
+
+    from backtest.engine import (
+        _active_watchlist,
+        _as_date_index,
+        _trading_days,
+        precompute_fundamental_states,
+    )
+    from backtest.metrics import compute_metrics
+
+    buy_fee, sell_fee = _cost_fractions(config)
+    if not scoring_schedule:
+        return _buyhold_result(close_by_ticker, start_date, end_date, config)
+
+    closes = {
+        str(t).strip().upper(): _as_date_index(s) for t, s in close_by_ticker.items()
+    }
+    calendar = _trading_days(closes, start_date, end_date)
+    if not calendar:
+        return {
+            "equity_curve": [],
+            "trades": [],
+            "metrics": compute_metrics([], [], config),
+            "signals": [],
+        }
+
+    ff_states = precompute_fundamental_states(scoring_schedule)
+    prev_weights: dict[str, float] = {}
+    equity = 1.0
+    equity_gross = 1.0
+    curve: list[dict] = []
+    total_cost = 0.0
+
+    for i, day in enumerate(calendar):
+        if i > 0 and prev_weights:
+            day_ret = 0.0
+            n_ok = 0
+            prev_day = calendar[i - 1]
+            for tkr, w in prev_weights.items():
+                series = closes.get(tkr)
+                if series is None:
+                    continue
+                if day not in series.index or prev_day not in series.index:
+                    continue
+                px0 = float(series.loc[prev_day])
+                px1 = float(series.loc[day])
+                if px0 <= 0 or pd.isna(px0) or pd.isna(px1):
+                    continue
+                day_ret += float(w) * (px1 / px0 - 1.0)
+                n_ok += 1
+            if n_ok == 0:
+                day_ret = 0.0
+            equity_gross *= 1.0 + day_ret
+            equity *= 1.0 + day_ret
+
+        curve.append({"date": day, "equity": float(equity)})
+
+        watchlist, _scores = _active_watchlist(
+            scoring_schedule,
+            day,
+            list(closes),
+            config,
+            ff_states=ff_states,
+        )
+        eligible = [
+            t
+            for t in watchlist
+            if t in closes and day in closes[t].index and not pd.isna(closes[t].loc[day])
+        ]
+        if eligible:
+            w = 1.0 / len(eligible)
+            new_weights = {t: w for t in eligible}
+        else:
+            new_weights = {}
+
+        # Cost trên thay đổi weight (hiệu lực T+1 — trừ vào equity hiện tại xấp xỉ)
+        all_tickers = set(prev_weights) | set(new_weights)
+        turnover = sum(
+            abs(new_weights.get(t, 0.0) - prev_weights.get(t, 0.0)) for t in all_tickers
+        )
+        step_cost = turnover * ((buy_fee + sell_fee) / 2.0)
+        if step_cost > 0 and i + 1 < len(calendar):
+            # Haircut sẽ phản ánh khi weight mới bắt đầu earn (ngày sau)
+            total_cost += step_cost
+            equity *= 1.0 - step_cost
+        prev_weights = new_weights
+
+    metrics = compute_metrics(curve, [], config)
+    g_ret = equity_gross - 1.0
+    n_ret = equity - 1.0
+    metrics = {
+        **metrics,
+        "gross_total_return": g_ret,
+        "net_total_return": n_ret,
+        "cost_drag": g_ret - n_ret,
+        "total_fees_tax": total_cost,
+    }
     return {"equity_curve": curve, "trades": [], "metrics": metrics, "signals": []}
 
 
@@ -227,6 +421,46 @@ def _assumed_lag_days(config: Mapping[str, Any] | None) -> int:
     sources = dict((config or {}).get("data_sources") or {})
     backtest = dict(sources.get("financial_statements_backtest") or {})
     return int(backtest.get("assumed_publication_lag_days", 90))
+
+
+# Schema version disk cache scoring_schedule — bump khi đổi format pickle/frames.
+_SCORING_SCHEDULE_CACHE_SCHEMA = 1
+
+
+def _scoring_schedule_cache_key(
+    tickers: list[str],
+    *,
+    lookback_years: int,
+    lag_days: int,
+    include_prior_year: bool,
+    config: Mapping[str, Any] | None,
+) -> str:
+    """Hash ổn định (sha256) cho thư mục cache theo năm."""
+    import hashlib
+    import json
+
+    sources = dict((config or {}).get("data_sources") or {})
+    fund_bt = dict(sources.get("financial_statements_backtest") or {})
+    fund_live = dict(sources.get("financial_statements") or {})
+    payload = {
+        "schema": _SCORING_SCHEDULE_CACHE_SCHEMA,
+        "tickers": sorted({str(t).strip().upper() for t in tickers if str(t).strip()}),
+        "lookback_years": int(lookback_years),
+        "lag_days": int(lag_days),
+        "include_prior_year": bool(include_prior_year),
+        "fund_bt_provider": fund_bt.get("provider"),
+        "fund_live_provider": fund_live.get("provider"),
+        "assumed_publication_lag_days": fund_bt.get("assumed_publication_lag_days", 90),
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(raw).hexdigest()[:16]
+
+
+def _default_scoring_cache_dir(config: Mapping[str, Any] | None) -> Path:
+    sources = dict((config or {}).get("data_sources") or {})
+    price = dict(sources.get("price") or {})
+    base = Path(str(price.get("cache_dir") or "data/cache"))
+    return base / "scoring_schedule"
 
 
 def build_scoring_schedule(
@@ -238,12 +472,23 @@ def build_scoring_schedule(
     lookback_years: int = 5,
     db_path: str = "store/bot.db",
     include_prior_year: bool = True,
+    refresh: bool = False,
+    cache_dir: str | Path | None = None,
 ) -> dict[str, dict[str, Any]]:
     """Build ``{assumed_filed_at: scoring_frames}`` for backtest PIT watchlist.
 
     Each calendar year ``Y`` pulls annual frames ``[Y-lookback+1, Y]`` via
     ``build_scoring_frames_from_providers`` and keys by ``assumed_filed_at(Y)``.
+
+    Disk cache theo năm (ghi ngay sau mỗi năm → resume nếu Ctrl+C)::
+
+        data/cache/scoring_schedule/{key}/year_{Y}.pkl
+
+    ``refresh=True`` (hoặc ``--refresh-data`` / ``--refresh-fundamentals``) bỏ qua
+    cache và ghi đè. Cache hit → 0 API call cho năm đó.
     """
+    import pickle
+
     from data.ingest.pit import assumed_filed_at
     from data.ingest.scoring_frames import build_scoring_frames_from_providers
 
@@ -255,25 +500,96 @@ def build_scoring_schedule(
         raise ValueError("start_date year must be <= end_date year")
     lag = _assumed_lag_days(config)
     first_y = start_y - 1 if include_prior_year else start_y
+    tickers_u = [str(t).strip().upper() for t in tickers if str(t).strip()]
+
+    cache_key = _scoring_schedule_cache_key(
+        tickers_u,
+        lookback_years=lookback_years,
+        lag_days=lag,
+        include_prior_year=include_prior_year,
+        config=config,
+    )
+    root = Path(cache_dir) if cache_dir is not None else _default_scoring_cache_dir(config)
+    year_dir = root / cache_key
+    year_dir.mkdir(parents=True, exist_ok=True)
+    meta_path = year_dir / "meta.json"
+    if not meta_path.exists():
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": _SCORING_SCHEDULE_CACHE_SCHEMA,
+                    "cache_key": cache_key,
+                    "tickers": tickers_u,
+                    "lookback_years": lookback_years,
+                    "lag_days": lag,
+                },
+                indent=2,
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
     schedule: dict[str, dict[str, Any]] = {}
+    hits = 0
+    misses = 0
     for year in range(first_y, end_y + 1):
         frame_start = year - lookback_years + 1
+        year_path = year_dir / f"year_{year}.pkl"
+        filed = assumed_filed_at(year, lag)
+
+        if not refresh and year_path.is_file():
+            try:
+                with year_path.open("rb") as fh:
+                    frames = pickle.load(fh)
+                if isinstance(frames, dict) and frames:
+                    schedule[filed] = frames
+                    hits += 1
+                    print(
+                        f"scoring_schedule: year={year} CACHE HIT → {year_path.name}",
+                        flush=True,
+                    )
+                    continue
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"scoring_schedule: year={year} cache corrupt ({exc}); rebuild",
+                    flush=True,
+                )
+
         print(
             f"scoring_schedule: year={year} frames={frame_start}..{year} ...",
             flush=True,
         )
         frames = build_scoring_frames_from_providers(
-            tickers,
+            tickers_u,
             frame_start,
             year,
             config=dict(config or {}),
             db_path=db_path,
         )
+        misses += 1
         if not frames:
             print(f"scoring_schedule: skip empty frames for year={year}", flush=True)
             continue
-        filed = assumed_filed_at(year, lag)
         schedule[filed] = frames
+        # Ghi ngay sau mỗi năm (resume-friendly).
+        try:
+            with year_path.open("wb") as fh:
+                pickle.dump(frames, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            print(
+                f"scoring_schedule: year={year} wrote {year_path}",
+                flush=True,
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"scoring_schedule: year={year} cache write failed ({exc})",
+                flush=True,
+            )
+
+    print(
+        f"scoring_schedule: done cache_key={cache_key} hits={hits} misses={misses} "
+        f"keys={len(schedule)} refresh={refresh}",
+        flush=True,
+    )
     return schedule
 
 
@@ -291,8 +607,6 @@ def run_ablation(
 
     Returns ``{"steps": [...], "layers_order": [...]}`` with Sharpe/CAGR/MDD per step.
     """
-    from backtest.engine import _active_watchlist
-
     order = list(layers_order or DEFAULT_LAYERS)
     steps = []
     signal_closes = _signal_closes(close_by_ticker, config)
@@ -303,24 +617,14 @@ def run_ablation(
             result = _buyhold_result(signal_closes, start_date, end_date, config)
             label = "B0_buyhold"
         elif layer == "fundamental":
-            # Equal-weight PASS/WATCH universe at end_date (PIT via schedule).
-            if scoring_schedule:
-                watchlist, _scores = _active_watchlist(
-                    scoring_schedule,
-                    end_date,
-                    list(signal_closes),
-                    config,
-                )
-                subset = {
-                    t: close_by_ticker[t]
-                    for t in watchlist
-                    if t in close_by_ticker and t in signal_closes
-                }
-                result = _buyhold_result(
-                    subset or signal_closes, start_date, end_date, config
-                )
-            else:
-                result = _buyhold_result(signal_closes, start_date, end_date, config)
+            # Dynamic PIT equal-weight PASS/WATCH (không look-ahead end_date).
+            result = _dynamic_fundamental_result(
+                signal_closes,
+                start_date,
+                end_date,
+                config,
+                scoring_schedule,
+            )
             label = "fundamental"
         elif layer == "regime":
             # Regime on; alpha off (alpha_eff NaN → WATCH-heavy — isolates regime).
@@ -1015,9 +1319,30 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Also run walk-forward OOS on full P0 stack (regime+alpha+risk)",
     )
+    parser.add_argument(
+        "--refresh-fundamentals",
+        action="store_true",
+        help="Bỏ qua disk cache scoring_schedule theo năm",
+    )
+    parser.add_argument(
+        "--refresh-data",
+        action="store_true",
+        help="Refresh fund cache + tắt OHLCV cache lần chạy này",
+    )
     args = parser.parse_args(argv)
 
     config = _load_config(args.config)
+    refresh_fund = bool(args.refresh_fundamentals or args.refresh_data)
+    if args.refresh_data:
+        from copy import deepcopy as _deepcopy
+
+        config = _deepcopy(config)
+        sources = dict(config.get("data_sources") or {})
+        price = dict(sources.get("price") or {})
+        price["cache_ohlcv"] = False
+        sources["price"] = price
+        config["data_sources"] = sources
+        print("refresh-data: OHLCV cache disabled for this run", flush=True)
     bt = dict(config.get("backtest") or {})
     start = args.start_date or bt.get("start_date") or "2019-01-01"
     end = args.end_date or date.today().isoformat()
@@ -1052,6 +1377,7 @@ def main(argv: list[str] | None = None) -> int:
             config,
             lookback_years=max(int(args.lookback_years), 1),
             db_path=args.db_path,
+            refresh=refresh_fund,
         )
         print(
             f"scoring_schedule keys={sorted(scoring_schedule)} "
@@ -1086,7 +1412,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         wm = wf.get("metrics") or {}
         walk_forward_payload = {
-            "n_folds": len(wf.get("folds") or []),
+            "n_folds": int(wf.get("n_folds") or len(wf.get("folds") or [])),
             "cagr": _json_safe(wm.get("cagr")),
             "sharpe": _json_safe(wm.get("sharpe")),
             "max_drawdown": _json_safe(wm.get("max_drawdown")),
@@ -1098,6 +1424,11 @@ def main(argv: list[str] | None = None) -> int:
             "profit_factor": _json_safe(wm.get("profit_factor")),
             "max_drawdown_days": _json_safe(wm.get("max_drawdown_days")),
             "margin_bps": _json_safe(wm.get("margin_bps")),
+            "fold_sharpes": [
+                _json_safe(x) for x in (wf.get("fold_sharpes") or [])
+            ],
+            "fold_sharpe_mean": _json_safe(wf.get("fold_sharpe_mean")),
+            "fold_sharpe_std": _json_safe(wf.get("fold_sharpe_std")),
             "equity_curve": list(wf.get("equity_curve") or []),
             "folds": [
                 {
@@ -1113,7 +1444,9 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"walk_forward: folds={walk_forward_payload['n_folds']} "
             f"sharpe={walk_forward_payload['sharpe']} "
-            f"cagr={walk_forward_payload['cagr']}",
+            f"cagr={walk_forward_payload['cagr']} "
+            f"fold_sharpe_mean={walk_forward_payload['fold_sharpe_mean']} "
+            f"fold_sharpe_std={walk_forward_payload['fold_sharpe_std']}",
             flush=True,
         )
 

@@ -16,6 +16,13 @@ def get_connection(db_path: str = "store/bot.db") -> sqlite3.Connection:
 def init_schema(conn: sqlite3.Connection, schema_path: str = "store/schema.sql") -> None:
     sql = Path(schema_path).read_text(encoding="utf-8")
     conn.executescript(sql)
+    # DB cũ tạo trước khi có margin_bps — bổ sung cột nếu thiếu.
+    cols = {
+        r[1]
+        for r in conn.execute("PRAGMA table_info(backtest_results)").fetchall()
+    }
+    if cols and "margin_bps" not in cols:
+        conn.execute("ALTER TABLE backtest_results ADD COLUMN margin_bps REAL")
     conn.commit()
 
 
@@ -314,13 +321,13 @@ def upsert_backtest_results(conn: sqlite3.Connection, rows: list[dict]) -> None:
         INSERT INTO backtest_results (
             run_id, run_at, scope, baseline,
             cagr, sharpe, max_drawdown, win_rate, n_trades, equity_curve_json,
-            turnover, sortino, calmar, profit_factor, max_drawdown_days,
+            turnover, sortino, calmar, profit_factor, max_drawdown_days, margin_bps,
             cvar95_realized, cvar95_calibration_note,
             sharpe_bull_regime, sharpe_bear_regime
         ) VALUES (
             :run_id, :run_at, :scope, :baseline,
             :cagr, :sharpe, :max_drawdown, :win_rate, :n_trades, :equity_curve_json,
-            :turnover, :sortino, :calmar, :profit_factor, :max_drawdown_days,
+            :turnover, :sortino, :calmar, :profit_factor, :max_drawdown_days, :margin_bps,
             :cvar95_realized, :cvar95_calibration_note,
             :sharpe_bull_regime, :sharpe_bear_regime
         )
@@ -337,6 +344,7 @@ def upsert_backtest_results(conn: sqlite3.Connection, rows: list[dict]) -> None:
             calmar=excluded.calmar,
             profit_factor=excluded.profit_factor,
             max_drawdown_days=excluded.max_drawdown_days,
+            margin_bps=excluded.margin_bps,
             cvar95_realized=excluded.cvar95_realized,
             cvar95_calibration_note=excluded.cvar95_calibration_note,
             sharpe_bull_regime=excluded.sharpe_bull_regime,
@@ -348,6 +356,7 @@ def upsert_backtest_results(conn: sqlite3.Connection, rows: list[dict]) -> None:
         "calmar": None,
         "profit_factor": None,
         "max_drawdown_days": None,
+        "margin_bps": None,
         "cvar95_realized": None,
         "cvar95_calibration_note": None,
         "sharpe_bull_regime": None,
@@ -640,7 +649,35 @@ def get_price_closes(
 def upsert_yearly_breakdown(conn: sqlite3.Connection, rows: list[dict]) -> None:
     """backtest/ ghi breakdown theo năm sau mỗi lần chạy định kỳ — xem
     backtest_yearly_breakdown. Mỗi dòng ứng với 1 (run_id, scope, baseline, year)."""
-    raise NotImplementedError
+    if not rows:
+        return
+    sql = """
+        INSERT INTO backtest_yearly_breakdown (
+            run_id, scope, baseline, year,
+            cagr, sharpe, max_drawdown, turnover, margin_bps, n_trades
+        ) VALUES (
+            :run_id, :scope, :baseline, :year,
+            :cagr, :sharpe, :max_drawdown, :turnover, :margin_bps, :n_trades
+        )
+        ON CONFLICT(run_id, scope, baseline, year) DO UPDATE SET
+            cagr=excluded.cagr,
+            sharpe=excluded.sharpe,
+            max_drawdown=excluded.max_drawdown,
+            turnover=excluded.turnover,
+            margin_bps=excluded.margin_bps,
+            n_trades=excluded.n_trades
+    """
+    defaults = {
+        "cagr": None,
+        "sharpe": None,
+        "max_drawdown": None,
+        "turnover": None,
+        "margin_bps": None,
+        "n_trades": None,
+    }
+    payload = [{**defaults, **row} for row in rows]
+    conn.executemany(sql, payload)
+    conn.commit()
 
 
 def get_yearly_breakdown(
@@ -651,14 +688,69 @@ def get_yearly_breakdown(
 ) -> list[dict]:
     """Bot dùng hàm này cho /backtest (bảng theo năm) và bot/charts.py cho yearly bar
     chart. CHỈ ĐỌC. ``run_id=None`` -> lấy lần chạy mới nhất."""
-    raise NotImplementedError
+    if run_id is None:
+        row = conn.execute(
+            """
+            SELECT run_id FROM backtest_results
+            WHERE scope = ? AND baseline = ?
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (scope, baseline),
+        ).fetchone()
+        if row is None:
+            # Fallback: bất kỳ baseline nào cùng scope
+            row = conn.execute(
+                """
+                SELECT run_id FROM backtest_results
+                WHERE scope = ?
+                ORDER BY run_at DESC
+                LIMIT 1
+                """,
+                (scope,),
+            ).fetchone()
+        if row is None:
+            return []
+        run_id = row["run_id"]
+    cur = conn.execute(
+        """
+        SELECT * FROM backtest_yearly_breakdown
+        WHERE scope = ? AND baseline = ? AND run_id = ?
+        ORDER BY year ASC
+        """,
+        (scope, baseline, run_id),
+    )
+    return [dict(r) for r in cur.fetchall()]
 
 
 def upsert_backtest_checks(conn: sqlite3.Connection, rows: list[dict]) -> None:
     """backtest/ablation.py ghi kết quả đối chiếu ngưỡng đã đăng ký trước (xem
     docs/DECISIONS.md) sau mỗi lần chạy — KHÔNG được tính ngưỡng "linh hoạt" sau khi
     đã thấy số, ngưỡng phải cố định trước khi chạy."""
-    raise NotImplementedError
+    if not rows:
+        return
+    sql = """
+        INSERT INTO backtest_checks (
+            run_id, scope, baseline, check_name,
+            threshold, actual_value, passed, note
+        ) VALUES (
+            :run_id, :scope, :baseline, :check_name,
+            :threshold, :actual_value, :passed, :note
+        )
+        ON CONFLICT(run_id, scope, baseline, check_name) DO UPDATE SET
+            threshold=excluded.threshold,
+            actual_value=excluded.actual_value,
+            passed=excluded.passed,
+            note=excluded.note
+    """
+    defaults = {"threshold": None, "actual_value": None, "note": None}
+    payload = []
+    for row in rows:
+        item = {**defaults, **row}
+        item["passed"] = 1 if int(item.get("passed") or 0) else 0
+        payload.append(item)
+    conn.executemany(sql, payload)
+    conn.commit()
 
 
 def get_backtest_checks(
@@ -668,4 +760,25 @@ def get_backtest_checks(
     run_id: str | None = None,
 ) -> list[dict]:
     """Bot dùng hàm này để hiện bảng PASS/FAIL (✅/❌) trong /backtest. CHỈ ĐỌC."""
-    raise NotImplementedError
+    if run_id is None:
+        row = conn.execute(
+            """
+            SELECT run_id FROM backtest_results
+            WHERE scope = ?
+            ORDER BY run_at DESC
+            LIMIT 1
+            """,
+            (scope,),
+        ).fetchone()
+        if row is None:
+            return []
+        run_id = row["run_id"]
+    cur = conn.execute(
+        """
+        SELECT * FROM backtest_checks
+        WHERE scope = ? AND baseline = ? AND run_id = ?
+        ORDER BY check_name ASC
+        """,
+        (scope, baseline, run_id),
+    )
+    return [dict(r) for r in cur.fetchall()]

@@ -67,12 +67,51 @@ def fit_or_fallback_sigma(returns_series, window: int = 20) -> dict:
 
 
 def position_size(sigma_hat: float, sigma_target: float, w_max: float = 0.1) -> float:
-    """size = min(w_max, sigma_target / sigma_hat). Framework mục Risk."""
+    """size = min(w_max, sigma_target / sigma_hat). Legacy per-ticker (giữ tương thích)."""
     if sigma_hat is None or pd.isna(sigma_hat) or sigma_hat <= 0:
         return 0.0
     if sigma_target is None or pd.isna(sigma_target) or sigma_target <= 0:
         raise ValueError("sigma_target must be positive")
     return float(min(w_max, float(sigma_target) / float(sigma_hat)))
+
+
+def inverse_vol_normalize_weights(
+    sigma_by_ticker: dict[str, float],
+    *,
+    w_max: float = 0.10,
+    target_sum: float = 1.0,
+) -> dict[str, float]:
+    """Inverse-vol portfolio: raw=1/σ, normalize sum≤target_sum, cap w_max.
+
+    Cash = phần dư sau cap. σ↑ → weight↓ (monotonic trên cùng universe).
+    """
+    raw: dict[str, float] = {}
+    for ticker, sigma in sigma_by_ticker.items():
+        if sigma is None or pd.isna(sigma) or float(sigma) <= 0:
+            continue
+        raw[str(ticker).strip().upper()] = 1.0 / float(sigma)
+    if not raw:
+        return {}
+    total = sum(raw.values())
+    if total <= 0:
+        return {t: 0.0 for t in raw}
+    scale = float(target_sum) / total
+    weights = {t: min(float(w_max), v * scale) for t, v in raw.items()}
+    # Redistribute residual nếu còn room dưới w_max (một vòng).
+    capped_sum = sum(weights.values())
+    residual = float(target_sum) - capped_sum
+    if residual > 1e-12:
+        room = {
+            t: float(w_max) - w
+            for t, w in weights.items()
+            if float(w_max) - w > 1e-12
+        }
+        room_total = sum(room.values())
+        if room_total > 0:
+            for t, r in room.items():
+                add = residual * (r / room_total)
+                weights[t] = min(float(w_max), weights[t] + add)
+    return weights
 
 
 def stop_loss_price(entry_price: float, sigma_hat: float, k: float = 2.0) -> float:

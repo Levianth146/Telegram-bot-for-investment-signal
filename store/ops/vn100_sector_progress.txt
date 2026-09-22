@@ -1,0 +1,4 @@
+batch1 exit=0 elapsed_s=219 tickers=BAF,BMP,BSR,BWE,CII,CMG,CTR,DBC,GEE,GEX,GMD,HAG
+batch2 exit=0 elapsed_s=222 tickers=HHV,HT1,KBC,KDC,KOS,MCH,NKG,NT2,NVL,PAN,PVD,PVT
+batch3 exit=0 elapsed_s=399 tickers=SBT,SIP,SJS,TAL,TCH,TCX,VCG,VGC,VPI,VPL,VPX,VSC
+batch4 exit=0 elapsed_s=25 tickers=VTP

@@ -1,0 +1,125 @@
+{
+  "start_date": "2021-01-01",
+  "end_date": "2024-12-31",
+  "tickers": [
+    "FPT",
+    "VNM",
+    "GAS",
+    "MWG",
+    "REE",
+    "PNJ",
+    "PLX",
+    "GVR",
+    "VHM",
+    "VHC",
+    "DCM",
+    "SAB"
+  ],
+  "loaded": [
+    "DCM",
+    "FPT",
+    "GAS",
+    "GVR",
+    "MWG",
+    "PLX",
+    "PNJ",
+    "REE",
+    "SAB",
+    "VHC",
+    "VHM",
+    "VNINDEX",
+    "VNM"
+  ],
+  "scoring_schedule_keys": [
+    "2021-03-31",
+    "2022-03-31",
+    "2023-03-31",
+    "2024-03-30",
+    "2025-03-31"
+  ],
+  "with_fundamentals": true,
+  "signal_every": 42,
+  "layers_order": [
+    "B0_buyhold",
+    "fundamental",
+    "regime",
+    "alpha",
+    "risk"
+  ],
+  "sharpe_keep_delta": 0.1,
+  "steps": [
+    {
+      "layer": "B0_buyhold",
+      "cagr": 0.1256845080387492,
+      "sharpe": 0.6570047176970748,
+      "max_drawdown": -0.3007130594110822,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": null,
+      "decision": "baseline"
+    },
+    {
+      "layer": "fundamental",
+      "cagr": 0.13369114133308257,
+      "sharpe": 0.6996256264177318,
+      "max_drawdown": -0.265293145811616,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": 0.04262090872065705,
+      "decision": "cut from main / keep appendix (dSharpe=+0.043 < +0.10)"
+    },
+    {
+      "layer": "regime",
+      "cagr": 0.0,
+      "sharpe": null,
+      "max_drawdown": 0.0,
+      "win_rate": null,
+      "n_trades": 0,
+      "delta_sharpe": null,
+      "decision": "pending \u2014 missing Sharpe (0 trades / flat)"
+    },
+    {
+      "layer": "alpha",
+      "cagr": -0.02169295244455116,
+      "sharpe": -0.916541573744162,
+      "max_drawdown": -0.08457998850533843,
+      "win_rate": 0.13043478260869565,
+      "n_trades": 23,
+      "delta_sharpe": -1.6161672001618939,
+      "decision": "cut from main / keep appendix (dSharpe=-1.616 < +0.10)"
+    },
+    {
+      "layer": "risk",
+      "cagr": -0.02247935363083764,
+      "sharpe": -0.9441973372888889,
+      "max_drawdown": -0.0874878112320322,
+      "win_rate": 0.13043478260869565,
+      "n_trades": 23,
+      "delta_sharpe": -0.027655763544726875,
+      "decision": "cut from main / keep appendix (dSharpe=-0.028 < +0.10)"
+    }
+  ],
+  "walk_forward": {
+    "n_folds": 2,
+    "cagr": 0.02896808339466861,
+    "sharpe": 0.7962476983373594,
+    "max_drawdown": -0.016576953608651523,
+    "n_trades": 3,
+    "folds": [
+      {
+        "test_start": "2024-01-01",
+        "test_end": "2024-06-30",
+        "sharpe": 1.2754092921344442,
+        "cagr": 0.06127836693265398,
+        "n_trades": 1
+      },
+      {
+        "test_start": "2024-07-01",
+        "test_end": "2024-12-31",
+        "sharpe": 0.022577750174845493,
+        "cagr": 0.00025681592883963766,
+        "n_trades": 2
+      }
+    ]
+  }
+}
