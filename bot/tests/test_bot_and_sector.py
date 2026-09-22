@@ -297,6 +297,27 @@ def test_formatters_regime_and_check():
     assert "Báo cáo kiểm thử" in filled_bt
     assert "không phải lãi/lỗ tài khoản thật" in filled_bt.casefold() or "không phải" in filled_bt
     assert "Sortino" in filled_bt
+    assert "B1" in filled_bt or "CANSLIM" in filled_bt
+    thin_bt = formatters.format_backtest_results(
+        [
+            {
+                "run_id": "thin",
+                "run_at": "2026-01-01",
+                "baseline": "framework",
+                "cagr": 0.03,
+                "sharpe": 0.8,
+                "max_drawdown": -0.02,
+                "n_trades": 3,
+            }
+        ],
+        "portfolio",
+    )
+    assert "mỏng" in thin_bt.casefold() or "sơ bộ" in thin_bt.casefold()
+    miss = formatters.format_check_unavailable(
+        "VCB", in_watchlist=False, has_fundamental=False, in_universe_csv=False
+    )
+    assert "universe" in miss.casefold() or "hose_liquid" in miss.casefold()
+    assert "không tự crawl" in miss.casefold() or "chỉ đọc store" in miss.casefold()
     sec_txt = formatters.format_sector_overview(
         [{"industry": "Thực phẩm", "n_pass": 1, "n_watch": 0, "n_fail": 2}],
         "2024-06-28",

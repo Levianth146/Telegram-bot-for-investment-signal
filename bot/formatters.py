@@ -548,15 +548,11 @@ def format_signal_message(
         [
             "① Doanh nghiệp",
             f"Kết luận: {translate_fundamental_view(view_raw)}",
-            (
-                f"Điểm: tăng trưởng {_fmt_num(fundamental_row.get('growth_score'))} · "
-                f"chất lượng {_fmt_num(fundamental_row.get('quality_score'))} · "
-                f"an toàn {_fmt_num(fundamental_row.get('safety_score'))} · "
-                f"định giá {_fmt_num(fundamental_row.get('valuation_score'))}"
-            ),
         ]
     )
-    # Headline nhẹ — bỏ jargon PASS_THRESHOLDS / NORMAL nếu quá kỹ thuật
+    # Mục 6.1: 1 headline metric thật / trụ + supporting khi bất thường.
+    # Store hiện chỉ có điểm 0–100 + tên metric trong headline_json (chưa có giá trị
+    # kiểu EPS CAGR %) → tạm hiện điểm nội bộ, ghi rõ là bản rút gọn.
     payload = _headline_payload(fundamental_row)
     pct = payload.get("fundamental_percentile")
     if pct is not None:
@@ -564,6 +560,16 @@ def format_signal_message(
             lines.append(f"Xếp hạng trong nhóm ngành: khoảng {_fmt_num(pct, 0)}/100")
         except (TypeError, ValueError):
             pass
+    lines.append(
+        f"Điểm nội bộ (tạm): tăng trưởng {_fmt_num(fundamental_row.get('growth_score'))} · "
+        f"chất lượng {_fmt_num(fundamental_row.get('quality_score'))} · "
+        f"an toàn {_fmt_num(fundamental_row.get('safety_score'))} · "
+        f"định giá {_fmt_num(fundamental_row.get('valuation_score'))}"
+    )
+    lines.append(
+        "Ghi chú: chưa hiện chỉ số gốc mục 6.1 (vd EPS CAGR / ROIC) — "
+        "đang dùng điểm tổng hợp thay thế."
+    )
 
     lines.extend(
         [
@@ -606,6 +612,53 @@ def format_signal_message(
             "",
             "▶ Tiếp theo:",
             f"  /chart {ticker} price  ·  /chart {ticker} risk  ·  /signals",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_check_unavailable(
+    ticker: str,
+    *,
+    in_watchlist: bool = False,
+    has_fundamental: bool = False,
+    in_universe_csv: bool | None = None,
+) -> str:
+    """Giải thích vì sao /check không có tín hiệu phiên — không đổ lỗi vendor mơ hồ."""
+    t = ticker.strip().upper()
+    lines = [
+        f"📭 Chưa có tín hiệu phiên cho {t}.",
+        "",
+        "Bot chỉ đọc store (không tự crawl khi bạn gõ lệnh).",
+        "Tín hiệu phiên chỉ sinh cho mã đã vào rổ lọc (PASS/WATCH) sau daily_job.",
+        "",
+    ]
+    if in_universe_csv is False:
+        lines.append(
+            f"• {t} không nằm trong universe cấu hình (vd hose_liquid_35) "
+            "→ Tầng 1/2 không chấm mã này."
+        )
+    elif not has_fundamental and not in_watchlist:
+        lines.append(
+            f"• {t} chưa có điểm cơ bản trong store "
+            "(chưa chạy / chưa vào lần lọc quý gần nhất)."
+        )
+    elif has_fundamental and not in_watchlist:
+        lines.append(
+            f"• {t} có điểm cơ bản nhưng FAIL / không vào watchlist "
+            "→ daily_job không sinh tín hiệu."
+        )
+    elif in_watchlist:
+        lines.append(
+            f"• {t} đang trong watchlist nhưng chưa có hàng signals "
+            "(cần chạy daily_job / lịch sau 15:00)."
+        )
+    lines.extend(
+        [
+            "",
+            "Xem mã đang có: /signals · /watchlist",
             "",
             DISCLAIMER,
         ]
@@ -678,22 +731,46 @@ def format_backtest_results(
         return "\n".join(lines)
     run_id = rows[0].get("run_id", "?")
     run_at = str(rows[0].get("run_at", ""))[:10]
+    baselines = {str(r.get("baseline") or "") for r in rows}
+    n_fw = next(
+        (r.get("n_trades") for r in rows if r.get("baseline") == "framework"),
+        None,
+    )
     lines = [
         "📊 Báo cáo kiểm thử chiến lược (nghiên cứu)",
         "⚠️ Đây không phải lãi/lỗ tài khoản thật của bạn.",
         f"Phạm vi: {scope} · mã chạy: {run_id} · ghi ngày {_fmt_day_vi(run_at)}",
         "",
-        "So sánh 2 cách:",
-        "• Mua đều & giữ — đơn giản, làm chuẩn",
-        "• Theo khung hệ thống — có lọc thị trường + xu hướng + rủi ro",
+        "So sánh hiện có:",
+        "• Mua đều & giữ (B0) — chuẩn tối thiểu",
+        "• Theo khung hệ thống — lọc thị trường + xu hướng + rủi ro",
         "",
     ]
+    if "B1_ta" not in baselines or "B2_canslim" not in baselines:
+        lines.append(
+            "Thiếu baseline B1 (TA/EMA-RSI) và B2 (CANSLIM) — "
+            "schema đã dự phòng, ablation chưa tính/ghi song song."
+        )
+        lines.append("")
+    try:
+        if n_fw is not None and int(n_fw) < 10:
+            lines.append(
+                f"⚠️ Cỡ mẫu ngoài mẫu còn mỏng (số lệnh khung ≈ {int(n_fw)}). "
+                "Sharpe/Calmar chỉ mang tính sơ bộ — chưa đủ để kết luận chắc."
+            )
+            lines.append("")
+    except (TypeError, ValueError):
+        pass
     for row in rows:
         base = row.get("baseline", "framework")
         if base == "B0_buyhold":
-            title = "① Mua đều & giữ"
+            title = "① Mua đều & giữ (B0)"
         elif base == "framework":
             title = "② Theo khung hệ thống (ngoài mẫu)"
+        elif base == "B1_ta":
+            title = "① B1 — TA/EMA-RSI"
+        elif base == "B2_canslim":
+            title = "① B2 — CANSLIM"
         else:
             title = f"① Cách «{base}»"
         lines.append(f"── {title} ──")
@@ -755,6 +832,7 @@ def format_sector_overview(
         header,
         "Ngày trên = lần lọc báo cáo gần nhất (ước tính ngày công bố),",
         "không phải ngày giao dịch hôm nay.",
+        "Nếu cách hôm nay quá xa: cần chạy lại pipeline quý (BCTC mới) — không phải lỗi /sector.",
         "",
     ]
     for row in rows:

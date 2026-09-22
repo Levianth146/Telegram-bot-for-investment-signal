@@ -183,3 +183,12 @@ MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
 - Tầng 2 đủ data **không bịa số**: (1) chạy `daily_job` đều → `signals` tích `p_regime`/`sigma_hat` theo ngày; (2) ghi `kalman_level_last` vào `reason_json`; (3) chart GARCH/regime chỉ bật khi ≥5 phiên lịch sử; (4) MC/CVaR outcomes chỉ khi bật flag + OOS đạt gate.
 - Catch-up: `python -m pipeline.daily_job --backfill-days 20 --no-push` (hoặc `scripts/run_daily_pipeline.py --backfill-days 20`) — tính lại từ `price_bars` đã có, không sync paper, không bịa số.
 - MC/BL vẫn `enabled: false`.
+
+### Audit UX vs framework (2026-09-22) — không lệch dần
+
+| Điểm | Kết luận | Hành động |
+|------|----------|-----------|
+| `/check` 4 điểm 0–100 | **Bản rút gọn tạm** so với mục 6.1 (1 headline metric thật + supporting khi bất thường). `headline_json` mới lưu *tên* metric, chưa persist giá trị (EPS CAGR %, ROIC…). | Copy bot ghi «điểm nội bộ (tạm)»; P1: wire giá trị headline từ Tầng 1 vào store. |
+| `/check VCB` trống | **Không phải DNSE thiếu VCB trước.** VCB **không có** trong `hose_liquid_35` → không vào universe → không Tầng 1 → không watchlist → `daily_job` không sinh signal. Bot **không** crawl khi gõ lệnh (ARCHITECTURE: chỉ đọc store). Automation = quarterly + daily theo lịch. | `/check` giải thích rõ ngoài universe / FAIL / chưa daily. |
+| `/sector` 31/03/2025 | **PIT as_of** = `assumed_filed_at(FY2024, lag≈90d)` từ lần `quarterly_job` đã chạy — đúng công thức, **cũ** vì chưa chạy lại với BCTC 2025+. | Hỏi data: re-run quarterly với period mới; không nhầm là bug ngày session. |
+| `/backtest` thiếu B1/B2 + n=3 | Schema có `B1_ta`/`B2_canslim` nhưng ablation **chỉ persist B0 + framework**. `ablation_watchlist12_wf` n_trades=3 → sơ bộ, chưa đủ kết luận mục 11.3. | Copy cảnh báo mẫu mỏng + thiếu B1/B2; backtest team implement 2 baseline. |

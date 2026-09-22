@@ -150,11 +150,34 @@ def build_application(token: str):
         ticker = context.args[0].strip().upper()
         signal, fund = read_signal_and_fundamental(ticker)
         if signal is None:
+            conn = _conn()
+            try:
+                wl = {
+                    str(r.get("ticker", "")).upper()
+                    for r in repository.get_watchlist_rows(conn)
+                }
+                funds = repository.get_latest_fundamental_scores(conn, [ticker])
+            finally:
+                conn.close()
+            in_univ: bool | None = None
+            try:
+                from data.universe import load_universe_tickers
+                from pipeline.daily_job import load_config
+
+                cfg = load_config()
+                ufile = (cfg.get("universe") or {}).get("file")
+                if ufile:
+                    univ = {str(t).upper() for t in load_universe_tickers(ufile)}
+                    in_univ = ticker in univ
+            except Exception:  # noqa: BLE001
+                in_univ = None
             await update.message.reply_text(
-                f"📭 Chưa có tín hiệu phiên cho {ticker}.\n\n"
-                f"Đợi hệ thống chạy xong phiên (thường sau 15:00) rồi thử lại.\n"
-                f"Hoặc gõ /signals để xem các mã đang có dữ liệu.\n\n"
-                + formatters.DISCLAIMER
+                formatters.format_check_unavailable(
+                    ticker,
+                    in_watchlist=ticker in wl,
+                    has_fundamental=ticker in funds,
+                    in_universe_csv=in_univ,
+                )
             )
             return
 
