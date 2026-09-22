@@ -112,7 +112,10 @@ def main() -> None:
     parser.add_argument(
         "--universe-file",
         default="",
-        help="CSV of tickers (used when --tickers empty; else config universe.file)",
+        help=(
+            "CSV of tickers (used when --tickers empty; else "
+            "config universe.fundamental_file / universe.file)"
+        ),
     )
     parser.add_argument("--start-year", type=int, default=None)
     parser.add_argument("--end-year", type=int, default=None)
@@ -140,9 +143,14 @@ def main() -> None:
         print(f"  sector: {sector.name}")
         return
 
-    from data.universe import filter_tickers_for_config, resolve_tickers
+    from data.universe import (
+        filter_tickers_for_config,
+        fundamental_universe_file,
+        resolve_tickers,
+    )
 
-    universe_file = args.universe_file or (config.get("universe") or {}).get("file")
+    # Tier1: VN100 (fundamental_file); CLI --universe-file vẫn ghi đè
+    universe_file = args.universe_file or fundamental_universe_file(config)
     tickers = resolve_tickers(
         tickers_csv=args.tickers,
         universe_file=universe_file or None,

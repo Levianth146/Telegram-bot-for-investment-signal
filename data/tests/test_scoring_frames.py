@@ -8,6 +8,7 @@ from data.ingest.fundamental_metrics import compute_year_metrics
 from data.ingest.pit import assumed_filed_at
 from data.ingest.scoring_frames import (
     build_scoring_frames,
+    is_excluded_financial,
     is_financial_industry,
 )
 from fundamental_filter import score_current_universe, to_store_records
@@ -83,6 +84,11 @@ def test_exclude_financials_and_industry_peers():
         "VCB": "Ngân hàng",
     }
     assert is_financial_industry(industries["VCB"])
+    # Curated ticker không cần industry_name (sector_mapping thiếu).
+    assert is_excluded_financial("VCB", None)
+    assert is_excluded_financial("SSI", None)
+    assert not is_excluded_financial("FPT", None)
+    assert is_excluded_financial("XYZ", "Ngân hàng thương mại")
 
     frames = build_scoring_frames(
         ["AAA", "BBB", "CCC", "VCB"],
@@ -99,6 +105,20 @@ def test_exclude_financials_and_industry_peers():
     assert frames["AAA"]["peer_method"].iloc[0] == "INDUSTRY"
     assert frames["AAA"]["peer_count"].iloc[0] == 3
     assert not pd.isna(frames["AAA"]["fundamental_context_score"].iloc[0])
+
+    # Không có industry map — vẫn loại VCB/SSI nhờ curated ticker.
+    frames_no_ind = build_scoring_frames(
+        ["AAA", "VCB", "SSI"],
+        2022,
+        2024,
+        fetch_annual,
+        fetch_price=lambda t: 50.0,
+        fetch_shares=lambda t: 10.0,
+        industry_by_ticker=None,
+        exclude_financials=True,
+        min_industry_peers=3,
+    )
+    assert set(frames_no_ind) == {"AAA"}
 
 
 def test_historical_valuation_with_year_end_prices():

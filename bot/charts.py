@@ -329,22 +329,65 @@ def _parse_equity(row: Mapping[str, Any]) -> list[dict]:
     return data if isinstance(data, list) else []
 
 
+def _clip_equity_to_window(
+    curve: list[dict],
+    start_date: str | None,
+    end_date: str | None,
+) -> list[dict]:
+    """Cắt equity theo cửa sổ ngày và rebase về 1.0 tại điểm đầu (so sánh công bằng)."""
+    if not curve:
+        return []
+    filtered: list[dict] = []
+    for point in curve:
+        day = str(point.get("date") or "")
+        if start_date and day < start_date:
+            continue
+        if end_date and day > end_date:
+            continue
+        if point.get("equity") is None:
+            continue
+        filtered.append({"date": day, "equity": float(point["equity"])})
+    if len(filtered) < 2:
+        return filtered
+    base = float(filtered[0]["equity"]) or 1.0
+    return [
+        {"date": p["date"], "equity": float(p["equity"]) / base} for p in filtered
+    ]
+
+
 def render_backtest_equity_curve_chart(
     scope: str,
     run_id: str,
     out_path: str | Path,
     *,
     db_path: str = "store/bot.db",
+    align_to_oos: bool = True,
 ) -> Path:
-    """Equity curve framework + baselines từ backtest_results."""
+    """Equity curve framework + baselines từ backtest_results.
+
+    Khi ``align_to_oos=True`` (mặc định): cắt mọi baseline về cùng cửa sổ ngày
+    của framework (OOS) và rebase — tránh so IS+OS với chỉ OOS trên 1 chart.
+    """
     rows = _load_backtest_curves(scope, run_id, db_path=db_path)
     out = _ensure_out(out_path)
     fig, ax = plt.subplots(figsize=(9, 4.5))
     plotted = 0
+
+    fw_row = next((r for r in rows if r.get("baseline") == "framework"), None)
+    oos_start = oos_end = None
+    if align_to_oos and fw_row:
+        fw_curve = _parse_equity(fw_row)
+        if fw_curve:
+            dates = [str(p.get("date") or "") for p in fw_curve if p.get("date")]
+            if dates:
+                oos_start, oos_end = min(dates), max(dates)
+
     for row in rows:
         curve = _parse_equity(row)
         if not curve:
             continue
+        if align_to_oos and oos_start:
+            curve = _clip_equity_to_window(curve, oos_start, oos_end)
         dates, equity = _dates_values(curve, "equity")
         if not equity:
             continue
@@ -352,7 +395,10 @@ def render_backtest_equity_curve_chart(
         plotted += 1
     if plotted == 0:
         raise ChartDataError("backtest_results rows have empty equity_curve_json")
-    ax.set_title(f"Backtest equity | {scope} | {run_id}")
+    title = f"Backtest equity | {scope} | {run_id}"
+    if oos_start and oos_end:
+        title += f"\n(cùng khung OOS {oos_start} → {oos_end}, rebase=1)"
+    ax.set_title(title)
     ax.legend(fontsize=8)
     ax.set_ylabel("equity")
     return _save(fig, out)
@@ -539,22 +585,115 @@ def render_sector_overview_chart(
 
 
 def render_pnl_is_os_chart(
-    scope: str, run_id: str, split_date: str, out_path: str | Path
+    scope: str,
+    run_id: str,
+    split_date: str,
+    out_path: str | Path,
+    *,
+    db_path: str = "store/bot.db",
 ) -> Path:
     """Equity curve tô 2 màu in-sample / out-of-sample theo ranh giới walk_forward.
 
-    ``split_date`` lấy từ ``pipeline/config.yaml:backtest.walk_forward``, không tự chọn.
+    ``split_date`` lấy từ cấu hình / OOS start — không tự chọn để làm đẹp số.
     """
-    raise NotImplementedError
+    rows = _load_backtest_curves(scope, run_id, db_path=db_path)
+    preferred = next((r for r in rows if r.get("baseline") == "framework"), None)
+    # Prefer longest curve (B0) for IS+OS band if framework is OOS-only.
+    b0 = next((r for r in rows if r.get("baseline") == "B0_buyhold"), None)
+    source = b0 or preferred
+    if not source:
+        raise ChartDataError("no backtest row for IS/OS chart")
+    curve = _parse_equity(source)
+    if len(curve) < 2:
+        raise ChartDataError("equity_curve quá ngắn cho IS/OS")
+    dates, equity = _dates_values(curve, "equity")
+    out = _ensure_out(out_path)
+    fig, ax = plt.subplots(figsize=(9, 4.5))
+    split = str(split_date)
+    for i in range(len(dates) - 1):
+        color = "#9dc3e6" if dates[i] < split else "#c6efce"
+        ax.axvspan(i, i + 1, color=color, alpha=0.35, lw=0)
+    ax.plot(range(len(equity)), equity, color="#1f4e79", lw=1.3)
+    ax.axvline(
+        next((i for i, d in enumerate(dates) if d >= split), 0),
+        color="#c00000",
+        ls="--",
+        lw=1,
+        label=f"OOS từ {split}",
+    )
+    ax.set_title(
+        f"IS / OS equity | {scope} | {run_id}\n"
+        f"baseline={source.get('baseline')} · split={split}"
+    )
+    ax.legend(fontsize=8)
+    ax.set_ylabel("equity")
+    return _save(fig, out)
 
 
 def render_yearly_stats_chart(
-    scope: str, baseline: str, run_id: str, out_path: str | Path
+    scope: str,
+    baseline: str,
+    run_id: str,
+    out_path: str | Path,
+    *,
+    db_path: str = "store/bot.db",
 ) -> Path:
     """Bar chart Sharpe/CAGR theo năm từ ``backtest_yearly_breakdown``."""
-    raise NotImplementedError
+    from store import repository
+
+    conn = repository.get_connection(db_path)
+    try:
+        repository.init_schema(conn)
+        rows = repository.get_yearly_breakdown(conn, scope, baseline, run_id)
+    finally:
+        conn.close()
+    if not rows:
+        raise ChartDataError(
+            f"chưa có yearly breakdown scope={scope} baseline={baseline}"
+        )
+    out = _ensure_out(out_path)
+    years = [str(r.get("year")) for r in rows]
+    sharpes = [
+        float(r["sharpe"]) if r.get("sharpe") is not None else float("nan")
+        for r in rows
+    ]
+    fig, ax = plt.subplots(figsize=(max(7, len(years) * 0.9), 4.2))
+    colors = ["#548235" if (s == s and s >= 0) else "#c00000" for s in sharpes]
+    ax.bar(years, sharpes, color=colors)
+    ax.axhline(0, color="#666", lw=0.8)
+    ax.set_title(f"Sharpe theo năm | {scope} | {baseline} | {run_id}")
+    ax.set_ylabel("Sharpe")
+    return _save(fig, out)
 
 
-def render_turnover_chart(scope: str, run_id: str, out_path: str | Path) -> Path:
-    """Turnover trượt theo thời gian (không gộp thành 1 số duy nhất)."""
-    raise NotImplementedError
+def render_turnover_chart(
+    scope: str,
+    run_id: str,
+    out_path: str | Path,
+    *,
+    db_path: str = "store/bot.db",
+    window: int = 21,
+) -> Path:
+    """Turnover trượt theo thời gian từ biến động abs equity (proxy khi thiếu trades).
+
+    Không bịa số tuyệt đối từ void — dùng |Δequity| / equity rolling mean.
+    """
+    rows = _load_backtest_curves(scope, run_id, db_path=db_path)
+    preferred = next((r for r in rows if r.get("baseline") == "framework"), rows[0])
+    curve = _parse_equity(preferred)
+    if len(curve) < window + 2:
+        raise ChartDataError("equity_curve quá ngắn cho turnover chart")
+    _, equity = _dates_values(curve, "equity")
+    arr = np.asarray(equity, dtype=float)
+    rets = np.abs(np.diff(arr) / np.where(arr[:-1] == 0, np.nan, arr[:-1]))
+    if len(rets) < window:
+        raise ChartDataError("không đủ điểm cho rolling turnover")
+    roll = np.convolve(rets, np.ones(window) / window, mode="valid")
+    out = _ensure_out(out_path)
+    fig, ax = plt.subplots(figsize=(9, 4.2))
+    ax.plot(range(len(roll)), roll, color="#ed7d31", lw=1.2)
+    ax.set_title(
+        f"Turnover proxy (rolling |ΔE|/E, w={window}) | {scope} | {run_id}"
+    )
+    ax.set_ylabel("turnover proxy / phiên")
+    return _save(fig, out)

@@ -348,7 +348,9 @@ def test_ablation_persist_to_store(tmp_path):
     ]
     curve_wf = [
         {"date": "2024-01-02", "equity": 1.0},
+        {"date": "2024-03-01", "equity": 0.98},
         {"date": "2024-06-28", "equity": 1.02},
+        {"date": "2024-09-30", "equity": 0.99},
         {"date": "2024-12-31", "equity": 1.03},
     ]
     payload = {
@@ -399,19 +401,72 @@ def test_ablation_persist_to_store(tmp_path):
         payload, db_path=str(db), run_id="ablation_test", scope="portfolio"
     )
     assert out["rows"] == 4
+    assert out.get("checks", 0) >= 4
     conn = repository.get_connection(str(db))
     rows = {r["baseline"]: r for r in repository.get_backtest_results(conn, "portfolio")}
+    checks = repository.get_backtest_checks(
+        conn, "portfolio", "framework", "ablation_test"
+    )
+    yearly = repository.get_yearly_breakdown(
+        conn, "portfolio", "framework", "ablation_test"
+    )
     conn.close()
     assert "B0_buyhold" in rows and "framework" in rows
     assert "B1_ta" in rows and "B2_canslim" in rows
     assert json.loads(rows["B0_buyhold"]["equity_curve_json"])[0]["equity"] == 1.0
     assert json.loads(rows["framework"]["equity_curve_json"])[-1]["equity"] == 1.03
     assert abs(float(rows["framework"]["sharpe"]) - 0.8) < 1e-9
+    # Enrich Sortino/Calmar từ equity khi artifact thiếu
+    assert rows["framework"].get("sortino") is not None
+    assert rows["framework"].get("calmar") is not None
+    names = {c["check_name"] for c in checks}
+    assert "CONCENTRATED_WEIGHT" in names
+    assert "MIN_SHARPE_IMPROVEMENT_OOS" in names
+    assert yearly  # có năm từ curve_wf 2024
 
 
-def test_sharpe_unit():
-    rets = pd.Series([0.01, -0.005, 0.008, 0.002])
-    assert sharpe_ratio(rets) != 0
+def test_margin_bps_and_yearly():
+    from backtest.metrics import margin_bps, yearly_breakdown_from_equity
+
+    assert margin_bps(0.10, 0.05) == pytest.approx(20_000.0)
+    curve = [
+        {"date": "2023-01-03", "equity": 1.0},
+        {"date": "2023-06-01", "equity": 1.05},
+        {"date": "2023-12-29", "equity": 1.10},
+        {"date": "2024-01-02", "equity": 1.10},
+        {"date": "2024-06-28", "equity": 1.12},
+        {"date": "2024-12-31", "equity": 1.15},
+    ]
+    yearly = yearly_breakdown_from_equity(curve, [], _config())
+    assert [y["year"] for y in yearly] == [2023, 2024]
+    assert yearly[0]["sharpe"] is not None or yearly[0]["cagr"] is not None
+
+
+def test_build_backtest_checks_concentrated():
+    from backtest.ablation import build_backtest_checks
+
+    cfg = {
+        "backtest": {
+            "checks": {
+                "min_sharpe_improvement_oos": 0.10,
+                "min_trades_for_significance": 30,
+                "max_turnover_pct": 200,
+                "max_position_weight_pct": 0.10,
+            }
+        },
+        "quant_engine": {"w_max": 0.10},
+    }
+    rows = {
+        "framework": {"sharpe": -0.8, "n_trades": 36, "turnover": None},
+        "B0_buyhold": {"sharpe": 0.2},
+    }
+    checks = build_backtest_checks(
+        rows, run_id="t", scope="portfolio", config=cfg
+    )
+    by = {c["check_name"]: c for c in checks}
+    assert by["CONCENTRATED_WEIGHT"]["passed"] == 1
+    assert by["MIN_SHARPE_IMPROVEMENT_OOS"]["passed"] == 0
+    assert by["MIN_TRADES_FOR_SIGNIFICANCE"]["passed"] == 1
 
 
 def test_b1_b2_baseline_runners_finite():

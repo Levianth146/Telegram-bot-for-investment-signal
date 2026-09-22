@@ -161,3 +161,66 @@ def test_backtest_and_sector_charts(tmp_path):
         "2024-06-28", tmp_path / "sec.png", db_path=str(db)
     )
     assert sec.is_file()
+
+
+def test_equity_align_oos_window(tmp_path):
+    """Baseline dài hơn phải cắt về cùng khung OOS framework khi align."""
+    import json
+
+    from bot.charts import render_backtest_equity_curve_chart
+
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    long_curve = [
+        {"date": f"2023-{m:02d}-15", "equity": 1.0 + m * 0.01} for m in range(1, 13)
+    ] + [{"date": f"2024-01-{i:02d}", "equity": 1.12 + i * 0.01} for i in range(1, 10)]
+    oos_curve = [
+        {"date": f"2024-01-{i:02d}", "equity": 1.0 + i * 0.02} for i in range(1, 10)
+    ]
+    common = {
+        "run_id": "align1",
+        "run_at": "2024-06-01T00:00:00",
+        "scope": "portfolio",
+        "cagr": 0.1,
+        "sharpe": 0.5,
+        "max_drawdown": -0.1,
+        "win_rate": None,
+        "n_trades": 5,
+        "turnover": None,
+        "sortino": None,
+        "calmar": None,
+        "profit_factor": None,
+        "max_drawdown_days": None,
+        "margin_bps": None,
+        "cvar95_realized": None,
+        "cvar95_calibration_note": None,
+        "sharpe_bull_regime": None,
+        "sharpe_bear_regime": None,
+    }
+    repository.upsert_backtest_results(
+        conn,
+        [
+            {
+                **common,
+                "baseline": "B0_buyhold",
+                "equity_curve_json": json.dumps(long_curve),
+            },
+            {
+                **common,
+                "baseline": "framework",
+                "sharpe": -0.5,
+                "equity_curve_json": json.dumps(oos_curve),
+            },
+        ],
+    )
+    conn.close()
+    path = render_backtest_equity_curve_chart(
+        "portfolio",
+        "align1",
+        tmp_path / "eq_oos.png",
+        db_path=str(db),
+        align_to_oos=True,
+    )
+    assert path.is_file()
+    assert path.stat().st_size > 100

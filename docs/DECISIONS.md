@@ -10,8 +10,9 @@ Ngưỡng thống nhất trước khi chạy ablation lần đầu (đồng bộ
 - **Cải thiện Sharpe tối thiểu (OOS)**: +0.10
 - **Số lệnh tối thiểu để kết luận có ý nghĩa thống kê**: 30 lệnh — dưới mức này, Sharpe/Calmar/Sortino chỉ mang tính minh hoạ, KHÔNG được dùng để kết luận "framework thắng baseline"
 - **Turnover tối đa**: 200%/năm — vượt mức này cần xem lại vì chi phí giao dịch (`backtest/costs.py`) có thể ăn hết phần alpha đo được
+- **Trọng số tối đa / mã (`max_position_weight_pct`)**: 0.10 — khớp `quant_engine.w_max`; check `CONCENTRATED_WEIGHT`
 
-`backtest/ablation.py` đối chiếu 3 ngưỡng trên và ghi PASS/FAIL vào bảng
+`backtest/ablation.py` đối chiếu các ngưỡng trên và ghi PASS/FAIL vào bảng
 `backtest_checks` sau mỗi lần chạy — nhóm xem bảng đó thay vì tự diễn giải số liệu.
 
 Điền ngày chốt các ngưỡng trên: __________
@@ -210,3 +211,69 @@ MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
 - **Ops:** `VNSignalDaily` schtasks Ready (T2–T6 15:15); README checklist rõ bot không crawl on-command.
 - **Ablation B1/B2:** `_b1_ta_result` (EMA20/50+RSI) + `_b2_canslim_result` (RS 6M top-half tháng) persist vào `backtest_results`.
 - **OOS denser (smoke):** `ablation_b012_smoke` 6 mã 2023–2026 `signal_every=42` no-fund: B0 Sharpe≈0.43; B1 n_trades=257 Sharpe≈0.55; B2 n=57; framework stack risk n=14 Sharpe≈−0.50. Full WF+fund 12 mã quá chậm (scoring_schedule) — không flip MC/BL (gate chưa đạt; framework vẫn mỏng / thua B0 trên sample này).
+
+### Bot UX ban_phac + universe VN100 Tier1 (2026-09-22)
+
+- **Bot UX (ban_phac):** `/check` state machine store-only (`OUT_OF_SCOPE` / `INSUFFICIENT` / `FAIL` / `WATCH` / `PASS` ± signal); copy «Tín hiệu hệ thống»; WATCH không action BUY; không Quant on-demand — bot chỉ đọc `store/`. `/start` 3 CTA; `/signals` nhóm theo độ mạnh; có OPEN paper → ưu tiên HOLD/REDUCE/EXIT.
+- **Universe hai tầng:** Tier1 Fundamental = **VN100** (`universe.fundamental_file` → `data/universe/vn100.csv`); Quant/`daily_job` chỉ watchlist (`quant_from_watchlist: true`); `hose_liquid_35` = smoke/fallback (`smoke_file` / ablation), không còn universe chính live.
+- **Backtest:** walk-forward `test_months: 6` **giữ nguyên**; MC/BL vẫn `enabled: false`.
+- **Tài chính:** VCB và mã ngân hàng/tài chính vẫn loại qua `exclude_financials: true` trước scoring — `/check VCB` = ngoài phạm vi chiến lược V1, không phải thiếu data.
+
+### Ops: VN100 Tier1 batch populate (2026-09-22)
+
+- **sector_job:** full VN100 **skipped** (prior live pull hung → Windows exit `4294967295`). `sector_mapping` **unchanged = 35** rows; no small-batch sector retry this run.
+- **quarterly_job:** batches ~12 tickers, `--start-year 2021 --end-year 2025` → `filed_at`/`as_of` **2026-03-31**. Batch0–5 all exit 0 (~4–5 min each). Persist `store/bot.db`.
+- **Hygiene:** deleted stale `watchlist`/`fundamental_scores` with `2027-03-31` (old end_year=2026 run) so `MAX(as_of_date)` = **2026-03-31** for `daily_job`.
+- **Store after:** fund distinct @2026-03-31 = **70** (VN100 overlap **68**); watchlist PASS **13** / WATCH **35** (n=**48**). **32** VN100 tickers not scored — mostly `exclude_financials` (banks/brokers/insurers: VCB, ACB, TCB, …); thin/new names (e.g. TCX, VPX, VCK, DSE) also absent.
+- **daily_job:** `python scripts/run_daily_pipeline.py --no-push` → **48** signals date **2026-09-22**; OHLCV **49/49 missing 0%** (incl. VNINDEX); MC/BL still off.
+- **Logs:** `store/ops/vn100_quarterly_progress.txt`, `store/ops/batch*.log`, `store/ops/daily_after_vn100.log`.
+
+### E2E audit A–E (2026-09-22) — PASS / FAIL / GAP
+
+Readonly store + config + pytest spot-check vs framework `.docx` / ban_phac / `docs/ARCHITECTURE.md`.
+Spot-check: `filed_at`/`as_of` max **2026-03-31**; **0** rows `2027-*`; `sector_mapping` **35**; fund@max **70** (VN100 overlap **68**); wl PASS **13** / WATCH **35**; signals **2026-09-22** BUY2/SELL16/WATCH30; MC/BL **off**; WF `test_months: 6`.
+
+| ID | Hạng mục | Kết quả | Ghi chú / bằng chứng | Việc tiếp theo |
+|---|---|---|---|---|
+| A1 | PIT annual BCTC + lag 90d → as_of FY | **PASS** | `assumed_filed_at`; store max `2026-03-31` (=FY2025+90d); không ép Q2 lịch | Giữ; hygiene nếu job `end_year=2026` tạo `2027-03-31` |
+| A2 | Bot store-only (ARCHITECTURE #1) | **PASS** | `bot/main` chỉ SELECT; không crawl trong handler | — |
+| A3 | Shared live↔backtest path | **PASS** | `generate_signals` / `score_current_universe` dùng chung | Smoke pytest giữ khi harden |
+| A4 | `sector_mapping` coverage VN100 | **GAP** | Chỉ **35**/100; 67 mã thiếu (incl. VCB/SSI) → peer INDUSTRY + `/sector` mỏng | Phase 2: `sector_job` batch nhỏ ~12 |
+| A5 | Stale as_of look-ahead | **PASS** *(hiện tại)* | `n2027=0` lúc audit | Phase 2: re-check sau job `end_year=2026` đang chạy |
+| A6 | Hist valuation / headline values | **PASS** | FAIL sample HPG `headline.value` có trong JSON | — |
+| B1 | quarterly → watchlist → daily signals | **PASS** | wl 48 @2026-03-31; signals date 2026-09-22 | Daily sau sector ổn |
+| B2 | Push subscribers | **PASS** *(cơ bản)* | `daily_job._maybe_push_signals`; 4 subscribers | Phase 3.3: ưu tiên đổi action |
+| C1 | P0 FF + Regime/Alpha/Risk flags on | **PASS** | config yaml | — |
+| C2 | exclude_financials V1 | **PASS** *(sau P0 UX)* | Curated ticker + industry; missing_fund ≈ banks/brokers; VCB không có fund row | Giữ V1 tắt tài chính |
+| C3 | Peer `min_industry_peers` + fallback | **PASS** *(logic)* / **GAP** *(data)* | Code OK; thiếu sector → nhiều cross-section | Sector batch |
+| C4 | MC / BL / Merton / Hawkes / DCF | **PASS** *(đúng off)* | `enabled: false`; gate OOS chưa đạt | Không flip đến gate |
+| C5 | OOS WF denser (gate) | **GAP** | Smoke ablation framework thua B0; n_trades mỏng | Phase 3.2 denser WF; **không** flip MC/BL |
+| D1 | `/check` state machine ban_phac §5–6 | **PASS** | OUT/INSUFF/FAIL/WATCH/PASS/EXCLUDED; pytest ban_phac | — |
+| D2 | §6.1 basic giá/TA trên INSUFFICIENT/EXCLUDED | **PASS** *(sau P0 UX)* | Header giá + TA block; EXCLUDED không nhầm thiếu data | % phiên / volume chi tiết vẫn mỏng nếu thiếu bars |
+| D3 | §6.2 FAIL full 4 trụ + lý do | **PASS** | `format_check_fundamental_fail` + headline values | Spot-check live `/check HPG` |
+| D4 | WATCH không nâng BUY | **PASS** | `cap_action_for_fundamental` | — |
+| D5 | Không Quant on-demand | **PASS** | ARCHITECTURE thắng ban_phac §5 bước 4 «nếu cho phép» | **Không** build on-demand |
+| D6 | Alert khi đổi action / follow CTA | **GAP** | Push = full `/signals` list mỗi ngày | Phase 3.3 |
+| D7 | Ticker thuần → `/check` (ban_phac P2) | **GAP** | Chưa có `MessageHandler` hẹp | Phase 3.3 |
+| D8 | Bot error_handler / chunk 4096 | **PARTIAL** | `chunk_telegram_text` có; chưa `add_error_handler` | Phase 3.1 nhẹ |
+| D9 | Copy as_of = BCTC năm (không «quý») | **PASS** *(sau P0 UX)* | `/watchlist` `/sector` copy FY | — |
+| E1 | VCB/SSI = EXCLUDED không «thiếu data» | **PASS** *(sau P0 UX)* | `is_excluded_financial` curated; flags `(True,True,True)` | Sector batch vẫn hữu ích cho industry label |
+| E2 | VCF / ngoài VN100 = OUT_OF_SCOPE | **PASS** | Đúng thiết kế; không crawl on-command | Chỉ mở rộng CSV có chủ đích |
+
+**Tóm tắt ưu tiên sau audit:** (1) sector batch nhỏ + hygiene as_of; (2) P0 harden theo GAP A4/C3/D8; (3) P1 denser OOS — MC/BL giữ off; (4) ban_phac polish alert/ticker handler.
+
+### Ops + Build sau audit (2026-09-22, plan e2e_audit_next_steps)
+
+- **P0 UX:** `is_excluded_financial` (curated ticker ∪ industry keywords); `/check` EXCLUDED hiện giá/TA; copy `/watchlist`/`/sector` = BCTC năm (không quý lịch).
+- **Sector:** overrides tài chính + mapping đủ VN100 (`sector_mapping` ≥100); VCB/SSI có industry «Ngân hàng»/«Chứng khoán». Live full-100 vẫn tránh — batch nhỏ / overrides.
+- **Hygiene:** sau `quarterly_job --end-year 2026` (đã xong): xóa `2027-03-31` fund+wl (`store/ops/hygiene_stale_asof.py --apply`); max lại **2026-03-31**. Daily `--no-push` → **48** signals.
+- **P0 harden:** error_handler Telegram; shared-path pytest; FAIL full view đã PASS audit; chunk 4096 giữ.
+- **P1 denser OOS:** `ablation_watchlist12_wf_dense.json` — 12 mã, `signal_every=21`, **no-fund**, WF `test_months=6`, folds=4, **n_trades=36**, Sharpe OOS **−0.84**. Gate ΔSharpe/+MC/BL **chưa đạt** → MC/BL/`cvar95_calibration`/`regime_conditional_sharpe` **vẫn `enabled: false`**.
+- **Ban_phac polish:** push ưu tiên đổi action (`diff_signal_actions`); MessageHandler ticker 3 ký tự → `/check`; CTA `/subscribe` trên PASS. **Không** Quant on-demand.
+
+### Storytelling + sizing + backtest trung thực (2026-09-22)
+
+- **Denser OOS = phát hiện hợp lệ:** framework Sharpe OOS ≈ −0.84 thua B0 (≈ +0.24) trên sample denser — **giữ trong báo cáo / DECISIONS**; **không** đổi tín hiệu để vá OOS; **không** flip MC/BL.
+- **Sizing:** tỷ trọng `/signals` + `/positions` = GARCH `position_size` (trần `w_max=0.10`) — **không** phải chia đều; BL chỉ khi `portfolio_black_litterman.enabled`. Check `CONCENTRATED_WEIGHT` / `max_position_weight_pct: 0.10` ghi vào `backtest_checks`.
+- **Chart OOS fairness:** `/backtest` equity align mọi baseline về cùng cửa sổ ngày framework OOS + rebase; wire yearly / IS–OS / turnover / checks ✅❌; persist Sortino/Calmar/`margin_bps` khi đủ dữ liệu.
+- **Copy:** `/backtest` mở đầu = nghiên cứu OOS, không cam kết lãi; denser thua B0 nói rõ là phát hiện hợp lệ.

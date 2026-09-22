@@ -174,7 +174,8 @@ def test_formatters_regime_and_check():
         meta={"market": "HOSE", "industry": "Thực phẩm", "last_close": 68.5},
     )
     assert "VNM" in msg and "HOSE" in msg
-    assert "KHUYẾN NGHỊ: MUA" in msg
+    assert "Tín hiệu hệ thống: MUA" in msg
+    assert "KHUYẾN NGHỊ" not in msg
     assert "① Doanh nghiệp" in msg
     assert "Xếp hạng trong nhóm ngành" in msg
     # Không có value 6.1 trong fixture → fallback điểm nội bộ
@@ -210,10 +211,14 @@ def test_formatters_regime_and_check():
     assert "Thiếu dữ liệu giá" in gap_msg
 
     welcome = formatters.format_welcome()
-    assert "/signals" in welcome and "Bắt đầu nhanh" in welcome
+    assert "/signals" in welcome and "/positions" in welcome
+    assert "Xem thị trường" in welcome or "cơ hội" in welcome
+    assert "/check FPT" in welcome
     help_txt = formatters.format_help()
     assert "/check <mã>" in help_txt and "Tham khảo thêm" in help_txt
     assert "/chart <mã> ta" in help_txt
+    assert "GARCH" in help_txt or "biến động" in help_txt
+    assert "chia đều" not in help_txt or "không phải chia đều" in help_txt
 
     sig_list = formatters.format_signals_list(
         [
@@ -235,6 +240,15 @@ def test_formatters_regime_and_check():
                 "sigma_hat": 0.018,
                 "size": 0.062,
             },
+            {
+                "date": "2024-06-28",
+                "ticker": "AAA",
+                "action": "BUY",
+                "score": 0.3,
+                "p_regime": 0.59,
+                "sigma_hat": 0.02,
+                "size": 0.05,
+            },
         ]
     )
     assert "Khí hậu thị trường" in sig_list
@@ -242,6 +256,29 @@ def test_formatters_regime_and_check():
     assert "σ̂" not in sig_list
     assert "VNM" in sig_list and "FPT" in sig_list
     assert "→ Chi tiết: /check VNM" in sig_list
+    assert "Tín hiệu đáng chú ý" in sig_list
+    assert "Tránh mua mới" in sig_list
+    assert "strategy pipeline" in sig_list.casefold() or "pipeline" in sig_list.casefold()
+    assert "GARCH" in sig_list or "sizing" in sig_list.casefold()
+    assert "10.0%" in sig_list or "trần" in sig_list  # w_max tip / size
+    # Độ mạnh: VNM (1.2) trước AAA (0.3) trong nhóm BUY
+    assert sig_list.index("VNM") < sig_list.index("AAA")
+    # Size thật (không làm tròn mất) + chạm trần
+    capped = formatters.format_signals_list(
+        [
+            {
+                "date": "2024-06-28",
+                "ticker": "GAS",
+                "action": "BUY",
+                "score": 1.0,
+                "p_regime": 0.6,
+                "sigma_hat": 0.02,
+                "size": 0.10,
+            }
+        ],
+        w_max=0.10,
+    )
+    assert "chạm trần" in capped
     assert formatters.format_signals_list([])
     wl = formatters.format_watchlist(
         [
@@ -275,6 +312,8 @@ def test_formatters_regime_and_check():
     assert "Vị thế giấy" in pos
     assert "21/09/2026" in pos
     assert "10.0%" in pos or "Tỷ trọng" in pos
+    assert "∑" in pos or "trần" in pos
+    assert "chạm trần" in pos
     empty_bt = formatters.format_backtest_results([], "portfolio")
     assert "Chưa có báo cáo kiểm thử" in empty_bt or "Chưa có" in empty_bt
     assert "/signals" in empty_bt and "/watchlist" in empty_bt
@@ -292,13 +331,36 @@ def test_formatters_regime_and_check():
                 "equity_curve_json": "[]",
                 "sortino": 0.6,
                 "calmar": 0.4,
-            }
+                "margin_bps": 100.0,
+            },
+            {
+                "run_id": "demo",
+                "run_at": "2026-01-01",
+                "baseline": "framework",
+                "cagr": -0.05,
+                "sharpe": -0.8,
+                "max_drawdown": -0.12,
+                "n_trades": 36,
+                "sortino": -0.7,
+                "calmar": -0.4,
+            },
         ],
         "portfolio",
+        checks=[
+            {
+                "check_name": "MIN_SHARPE_IMPROVEMENT_OOS",
+                "threshold": 0.1,
+                "actual_value": -1.3,
+                "passed": 0,
+                "note": "thua B0",
+            }
+        ],
     )
     assert "Báo cáo kiểm thử" in filled_bt
-    assert "không phải lãi/lỗ tài khoản thật" in filled_bt.casefold() or "không phải" in filled_bt
+    assert "không phải lãi/lỗ tài khoản thật" in filled_bt.casefold() or "không cam kết" in filled_bt.casefold()
     assert "Sortino" in filled_bt
+    assert "phát hiện hợp lệ" in filled_bt.casefold()
+    assert "MIN_SHARPE" in filled_bt or "❌" in filled_bt
     assert "B1" in filled_bt or "CANSLIM" in filled_bt
     thin_bt = formatters.format_backtest_results(
         [
@@ -318,8 +380,9 @@ def test_formatters_regime_and_check():
     miss = formatters.format_check_unavailable(
         "VCB", in_watchlist=False, has_fundamental=False, in_universe_csv=False
     )
-    assert "universe" in miss.casefold() or "hose_liquid" in miss.casefold()
-    assert "không tự crawl" in miss.casefold() or "chỉ đọc store" in miss.casefold()
+    assert "phạm vi" in miss.casefold() or "universe" in miss.casefold()
+    assert "15:00" not in miss
+    assert "không tự crawl" in miss.casefold() or "chỉ đọc store" in miss.casefold() or "ngoài phạm vi" in miss.casefold()
     sec_txt = formatters.format_sector_overview(
         [{"industry": "Thực phẩm", "n_pass": 1, "n_watch": 0, "n_fail": 2}],
         "2024-06-28",

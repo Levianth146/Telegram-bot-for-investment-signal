@@ -86,6 +86,21 @@ def calmar_ratio(cagr_value: float, mdd: float) -> float:
     return float(cagr_value) / abs(float(mdd))
 
 
+def margin_bps(cagr_value: float, turnover_value: float) -> float:
+    """WQ-style: return / turnover (bps). CAGR thập phân, turnover phân số NAV/kỳ.
+
+    ``margin_bps = (cagr / turnover) * 10000`` khi turnover > 0.
+    """
+    if cagr_value is None or turnover_value is None:
+        return float("nan")
+    if pd.isna(cagr_value) or pd.isna(turnover_value):
+        return float("nan")
+    t = float(turnover_value)
+    if abs(t) < 1e-12:
+        return float("nan")
+    return float(cagr_value) / t * 10_000.0
+
+
 def profit_factor(trades: list[dict]) -> float:
     gains = sum(float(t["pnl"]) for t in trades if float(t.get("pnl", 0)) > 0)
     losses = sum(-float(t["pnl"]) for t in trades if float(t.get("pnl", 0)) < 0)
@@ -222,6 +237,12 @@ def compute_metrics(
     if _enabled("max_drawdown_days"):
         metrics["max_drawdown_days"] = max_drawdown_days(equity)
 
+    if _enabled("margin_bps"):
+        to = metrics.get("turnover")
+        if to is None:
+            to = turnover(trades, equity_curve)
+        metrics["margin_bps"] = margin_bps(cagr_v, to)
+
     if _enabled("cvar95_calibration", default=False):
         realized = cvar95_realized(rets)
         metrics["cvar95_realized"] = realized
@@ -241,3 +262,54 @@ def compute_metrics(
         metrics["sharpe_bear_regime"] = bear_s
 
     return metrics
+
+
+def yearly_breakdown_from_equity(
+    equity_curve: list[dict],
+    trades: list[dict] | None = None,
+    config: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """Tách metrics theo năm dương lịch từ equity_curve (WQ yearly)."""
+    if not equity_curve:
+        return []
+    by_year: dict[int, list[dict]] = {}
+    for point in equity_curve:
+        day = str(point.get("date") or "")
+        if len(day) < 4:
+            continue
+        try:
+            year = int(day[:4])
+        except ValueError:
+            continue
+        by_year.setdefault(year, []).append(point)
+
+    trades = list(trades or [])
+    rows: list[dict[str, Any]] = []
+    for year in sorted(by_year):
+        curve = by_year[year]
+        if len(curve) < 2:
+            continue
+        # Rebase năm về 1.0 để CAGR/Sharpe trong năm có nghĩa.
+        base = float(curve[0]["equity"]) or 1.0
+        rebated = [
+            {"date": p["date"], "equity": float(p["equity"]) / base}
+            for p in curve
+        ]
+        year_trades = [
+            t
+            for t in trades
+            if str(t.get("exit_date") or t.get("entry_date") or "")[:4] == str(year)
+        ]
+        m = compute_metrics(rebated, year_trades, config)
+        rows.append(
+            {
+                "year": year,
+                "cagr": m.get("cagr"),
+                "sharpe": m.get("sharpe"),
+                "max_drawdown": m.get("max_drawdown"),
+                "turnover": m.get("turnover"),
+                "margin_bps": m.get("margin_bps"),
+                "n_trades": m.get("n_trades"),
+            }
+        )
+    return rows

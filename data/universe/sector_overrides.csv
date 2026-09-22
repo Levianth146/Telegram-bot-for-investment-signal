@@ -5,3 +5,36 @@ KDH,HOSE,Bất động sản,Bất động sản,,
 VIC,HOSE,Bất động sản,Bất động sản,,
 POW,HOSE,Tiện ích,Tiện ích,Điện,
 VRE,HOSE,Bán lẻ,Bán lẻ,Trung tâm thương mại,Vincom Retail — gắn Bán lẻ TTTM
+ACB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+BID,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+CTG,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+EIB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+HDB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+LPB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+MBB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+MSB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+NAB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+OCB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+SHB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+SSB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+STB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+TCB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+TPB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+VCB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+VIB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+VPB,HOSE,Ngân hàng,Ngân hàng,,V1 exclude_financials curated
+BSI,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+CTS,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+DSE,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+FTS,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+HCM,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+SSI,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+VCI,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+VCK,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+VIX,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+VND,HOSE,Chứng khoán,Chứng khoán,,V1 exclude_financials curated
+BVH,HOSE,Bảo hiểm,Bảo hiểm,,V1 exclude_financials curated
+BMI,HOSE,Bảo hiểm,Bảo hiểm,,V1 exclude_financials curated
+MIG,HOSE,Bảo hiểm,Bảo hiểm,,V1 exclude_financials curated
+PVI,HOSE,Bảo hiểm,Bảo hiểm,,V1 exclude_financials curated
+EVF,HOSE,Tài chính,Tài chính,,V1 exclude_financials curated

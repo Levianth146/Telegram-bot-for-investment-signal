@@ -1,5 +1,7 @@
 ticker
-# HOSE liquid curated (~35) — không UPCOM; lọc thêm qua allowed_exchanges
+# HOSE liquid curated (~35) — smoke / ablation / fallback nhanh
+# Không UPCOM; lọc thêm qua allowed_exchanges.
+# Production Tier1: data/universe/vn100.csv (universe.fundamental_file).
 FPT
 VNM
 HPG

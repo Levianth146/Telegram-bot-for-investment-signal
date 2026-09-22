@@ -6,6 +6,9 @@ Luồng: store.watchlist (từ Tầng 1) + giá/khối lượng hằng ngày t�
      hoặc fallback equal-weight nếu tắt) -> probabilistic (monte carlo + hawkes,
      nếu bật) -> ghi vào store.signals
 
+Universe Quant: chỉ watchlist (config ``universe.quant_from_watchlist: true``);
+không kéo full VN100. Benchmark thêm ``quant_engine.benchmark`` (vd VNINDEX).
+
 QUAN TRỌNG: đây là nơi DUY NHẤT được fit/chạy các mô hình Tầng 2. bot/ không
 bao giờ được gọi các hàm trong quant_engine/ trực tiếp.
 """
@@ -176,21 +179,37 @@ def bars_from_price_inputs(price_inputs: dict[str, Any] | None) -> list[dict]:
     return bars
 
 
-def _maybe_push_signals(signals: list[dict], chat_ids: list[int]) -> dict[str, Any]:
-    """Notify active subscribers after signals are persisted (ARCHITECTURE)."""
-    from bot.formatters import format_signals_list
+def _maybe_push_signals(
+    signals: list[dict],
+    chat_ids: list[int],
+    *,
+    action_changes: list[dict] | None = None,
+) -> dict[str, Any]:
+    """Notify active subscribers after signals are persisted (ARCHITECTURE).
 
+    Ưu tiên tin **đổi action** (BUY↔WATCH↔SELL) khi có; fallback danh sách đầy đủ.
+    """
+    from bot.formatters import format_action_changes_alert, format_signals_list
+
+    prefer_changes = bool(action_changes)
+    text = (
+        format_action_changes_alert(action_changes or [])
+        if prefer_changes
+        else (format_signals_list(signals) if signals else "")
+    )
     result: dict[str, Any] = {
         "chat_ids": list(chat_ids),
         "sent": 0,
         "failed": 0,
-        "text": format_signals_list(signals) if signals else "",
+        "text": text,
+        "mode": "action_changes" if prefer_changes else "full_list",
+        "n_changes": len(action_changes or []),
     }
-    if not chat_ids or not signals:
+    if not chat_ids or not text:
         return result
 
-    import os
     import json
+    import os
     import urllib.error
     import urllib.request
 
@@ -199,7 +218,6 @@ def _maybe_push_signals(signals: list[dict], chat_ids: list[int]) -> dict[str, A
         result["skipped"] = "BOT_TOKEN unset"
         return result
 
-    text = result["text"]
     for chat_id in chat_ids:
         payload = json.dumps(
             {"chat_id": chat_id, "text": text[:4000]}
@@ -219,6 +237,38 @@ def _maybe_push_signals(signals: list[dict], chat_ids: list[int]) -> dict[str, A
         except (urllib.error.URLError, TimeoutError, OSError):
             result["failed"] += 1
     return result
+
+
+def diff_signal_actions(
+    previous: list[dict],
+    current: list[dict],
+) -> list[dict]:
+    """So action theo ticker giữa hai lần signals — chỉ trả mã đổi trạng thái."""
+    prev_map = {
+        str(r.get("ticker", "")).upper(): str(r.get("action") or "WATCH").upper()
+        for r in previous
+        if r.get("ticker")
+    }
+    out: list[dict] = []
+    for row in current:
+        ticker = str(row.get("ticker") or "").upper()
+        if not ticker:
+            continue
+        new_act = str(row.get("action") or "WATCH").upper()
+        old_act = prev_map.get(ticker)
+        if old_act is None or old_act == new_act:
+            continue
+        out.append(
+            {
+                "ticker": ticker,
+                "from_action": old_act,
+                "to_action": new_act,
+                "date": row.get("date"),
+                "score": row.get("score"),
+            }
+        )
+    out.sort(key=lambda r: str(r.get("ticker")))
+    return out
 
 
 def run(
@@ -290,6 +340,10 @@ def run(
         conn = repository.get_connection(db_path)
         try:
             repository.init_schema(conn)
+            prev_signals = repository.get_latest_signals(conn) if signals else []
+            action_changes = (
+                diff_signal_actions(prev_signals, signals) if signals else []
+            )
             if bar_rows:
                 price_bars_n = repository.upsert_price_bars(conn, bar_rows)
             if signals:
@@ -314,10 +368,13 @@ def run(
                     )
             else:
                 chat_ids = []
+                action_changes = []
         finally:
             conn.close()
         if push and signals:
-            push_result = _maybe_push_signals(signals, chat_ids)
+            push_result = _maybe_push_signals(
+                signals, chat_ids, action_changes=action_changes or None
+            )
 
     return {
         "tickers": universe,

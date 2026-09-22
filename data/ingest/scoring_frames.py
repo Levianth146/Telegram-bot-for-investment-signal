@@ -48,13 +48,73 @@ _FINANCIAL_KEYWORDS = (
     "finance",
 )
 
+# Fallback khi sector_mapping thiếu — không phụ thuộc industry_name.
+# Ngân hàng / chứng khoán / bảo hiểm / tài chính phổ biến VN100 (+ vài mã lân cận).
+CURATED_FINANCIAL_TICKERS: frozenset[str] = frozenset(
+    {
+        # Ngân hàng
+        "ACB",
+        "BID",
+        "CTG",
+        "EIB",
+        "HDB",
+        "LPB",
+        "MBB",
+        "MSB",
+        "NAB",
+        "OCB",
+        "SHB",
+        "SSB",
+        "STB",
+        "TCB",
+        "TPB",
+        "VCB",
+        "VIB",
+        "VPB",
+        # Chứng khoán / môi giới
+        "BSI",
+        "CTS",
+        "DSE",
+        "FTS",
+        "HCM",
+        "ORS",
+        "SHS",
+        "SSI",
+        "VCI",
+        "VCK",
+        "VIX",
+        "VND",
+        # Bảo hiểm / tài chính khác
+        "BMI",
+        "BVH",
+        "EVF",
+        "MIG",
+        "PVI",
+        "VNR",
+    }
+)
+
 
 def is_financial_industry(industry_name: str | None) -> bool:
-    """True when industry name matches V1 financial exclusion keywords."""
+    """True khi tên ngành khớp từ khóa loại trừ tài chính V1."""
     if not industry_name:
         return False
     lowered = str(industry_name).casefold()
     return any(keyword in lowered for keyword in _FINANCIAL_KEYWORDS)
+
+
+def is_excluded_financial(
+    ticker: str | None,
+    industry_name: str | None = None,
+) -> bool:
+    """True nếu mã tài chính V1 — ticker curated HOẶC industry keywords.
+
+    Dùng khi ``sector_mapping`` thiếu: vẫn EXCLUDED (không nhầm «thiếu data»).
+    """
+    t = str(ticker or "").strip().upper()
+    if t and t in CURATED_FINANCIAL_TICKERS:
+        return True
+    return is_financial_industry(industry_name)
 
 
 def _trend_score(series: list[float | None]) -> float | None:
@@ -369,11 +429,12 @@ def build_scoring_frames(
         for t in targets
         if (industry_by_ticker or {}).get(t)
     }
-    if exclude_financials and industries:
+    if exclude_financials:
+        # Curated ticker + industry keywords — không chờ sector_mapping đủ.
         targets = [
             t
             for t in targets
-            if not is_financial_industry(industries.get(t))
+            if not is_excluded_financial(t, industries.get(t))
         ]
         if not targets:
             return {}

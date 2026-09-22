@@ -6,12 +6,68 @@ Không fit mô hình, không gọi quant_engine/fundamental_filter để tính �
 from __future__ import annotations
 
 import argparse
+import logging
 import os
 from pathlib import Path
 from typing import Any
 
 from bot import formatters
 from store import repository
+
+logger = logging.getLogger(__name__)
+
+# Telegram giới hạn 4096 ký tự/tin; chừa biên để tránh BadRequest.
+TELEGRAM_TEXT_LIMIT = 4000
+
+
+def chunk_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str]:
+    """Cắt chuỗi tin nhắn Telegram theo đoạn/dòng, mỗi phần ≤ limit (< 4096).
+
+    Ưu tiên cắt tại ``\\n``; nếu một dòng dài hơn limit thì cắt cứng theo ký tự.
+    """
+    if limit <= 0:
+        raise ValueError("limit phải > 0")
+    if not text:
+        return [""]
+    if len(text) <= limit:
+        return [text]
+
+    chunks: list[str] = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= limit:
+            chunks.append(remaining)
+            break
+        window = remaining[:limit]
+        # Ưu tiên cắt tại xuống dòng gần cuối cửa sổ.
+        cut = window.rfind("\n")
+        if cut <= 0:
+            cut = limit
+        piece = remaining[:cut]
+        # Bỏ \\n đứng đầu phần còn lại nếu cắt đúng tại newline.
+        rest = remaining[cut:]
+        if rest.startswith("\n"):
+            rest = rest[1:]
+        if not piece:
+            # Dòng đơn quá dài: cắt cứng.
+            piece = remaining[:limit]
+            rest = remaining[limit:]
+        chunks.append(piece)
+        remaining = rest
+    return chunks
+
+
+async def reply_text_safe(update: Any, text: str, *, limit: int = TELEGRAM_TEXT_LIMIT) -> None:
+    """Gửi ``text`` qua ``update.message.reply_text``, chia chunk nếu cần.
+
+    Nếu ``update.message`` là None (một số loại Update không có message) thì bỏ qua và log.
+    """
+    message = getattr(update, "message", None)
+    if message is None:
+        logger.warning("reply_text_safe: update.message is None — bỏ qua gửi tin")
+        return
+    for part in chunk_telegram_text(text, limit=limit):
+        await message.reply_text(part)
 
 
 def _db_path() -> str:
@@ -52,6 +108,71 @@ def read_signal_and_fundamental(ticker: str) -> tuple[dict | None, dict | None]:
         return signal, funds.get(ticker)
     finally:
         conn.close()
+
+
+def read_open_position(ticker: str) -> dict | None:
+    """Vị thế giấy OPEN mới nhất cho mã (nếu có)."""
+    ticker = ticker.strip().upper()
+    conn = _conn()
+    try:
+        rows = repository.get_open_positions(conn)
+    finally:
+        conn.close()
+    matches = [r for r in rows if str(r.get("ticker", "")).upper() == ticker]
+    if not matches:
+        return None
+    # opened_at mới nhất nếu có nhiều dòng
+    matches.sort(key=lambda r: str(r.get("opened_at") or ""), reverse=True)
+    return matches[0]
+
+
+def _universe_and_finance_flags(ticker: str) -> tuple[bool | None, bool, bool]:
+    """(in_universe, is_financial, exclude_financials) — chỉ đọc config/store, không crawl.
+
+    ``is_financial`` dùng curated ticker + industry keywords (không phụ thuộc
+    sector_mapping đủ) để VCB/SSI → EXCLUDED_FINANCIAL, không nhầm thiếu data.
+    """
+    ticker = ticker.strip().upper()
+    in_univ: bool | None = None
+    is_fin = False
+    exclude_fin = True
+    try:
+        from data.ingest.scoring_frames import is_excluded_financial
+        from data.universe import load_universe_tickers
+        from pipeline.daily_job import load_config
+
+        cfg = load_config()
+        # Prefer fundamental_file (VN100 Tier1); fallback file/smoke.
+        univ_cfg = cfg.get("universe") or {}
+        ufile = (
+            univ_cfg.get("fundamental_file")
+            or univ_cfg.get("file")
+            or univ_cfg.get("smoke_file")
+        )
+        if ufile:
+            univ = {str(t).upper() for t in load_universe_tickers(ufile)}
+            in_univ = ticker in univ
+        exclude_fin = bool(
+            (cfg.get("fundamental_filter") or {}).get("exclude_financials", True)
+        )
+        industry = None
+        conn = _conn()
+        try:
+            sector = repository.get_sector_for_ticker(conn, ticker)
+        finally:
+            conn.close()
+        if sector:
+            industry = sector.get("industry") or sector.get("sector")
+        is_fin = is_excluded_financial(ticker, industry)
+    except Exception:  # noqa: BLE001
+        # Fallback cứng: curated vẫn nhận diện khi import/config lỗi nhẹ.
+        try:
+            from data.ingest.scoring_frames import is_excluded_financial
+
+            is_fin = is_excluded_financial(ticker, None)
+        except Exception:  # noqa: BLE001
+            pass
+    return in_univ, is_fin, exclude_fin
 
 
 def read_regime() -> tuple[float | None, str | None]:
@@ -99,10 +220,35 @@ def _load_config_flags() -> dict[str, bool]:
     return flags
 
 
+def _load_w_max() -> float:
+    """Trần % NAV/mã từ config (GARCH sizing) — mặc định 0.10."""
+    import yaml
+
+    path = Path(os.getenv("PIPELINE_CONFIG", "pipeline/config.yaml"))
+    if not path.is_file():
+        return 0.10
+    cfg = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    try:
+        return float((cfg.get("quant_engine") or {}).get("w_max", 0.10))
+    except (TypeError, ValueError):
+        return 0.10
+
+
 def build_application(token: str):
     """Register command handlers; returns telegram Application."""
+    import logging
+    import re
+
     from telegram import Update
-    from telegram.ext import Application, CommandHandler, ContextTypes
+    from telegram.ext import (
+        Application,
+        CommandHandler,
+        ContextTypes,
+        MessageHandler,
+        filters,
+    )
+
+    log = logging.getLogger("bot.main")
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(formatters.format_welcome())
@@ -123,11 +269,13 @@ def build_application(token: str):
 
     async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = read_latest_signals()
-        await update.message.reply_text(formatters.format_signals_list(rows))
+        await reply_text_safe(
+            update, formatters.format_signals_list(rows, w_max=_load_w_max())
+        )
 
     async def watchlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = read_watchlist()
-        await update.message.reply_text(formatters.format_watchlist(rows))
+        await reply_text_safe(update, formatters.format_watchlist(rows))
 
     async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         p_bull, as_of = read_regime()
@@ -136,55 +284,35 @@ def build_application(token: str):
     async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import InputFile
 
-        from bot.charts import ChartDataError, render_price_chart
+        from bot.charts import (
+            ChartDataError,
+            render_fundamental_radar_chart,
+            render_garch_risk_band_chart,
+            render_monte_carlo_distribution_chart,
+            render_price_chart,
+            render_realized_vol_band_chart,
+            render_ta_reference_chart,
+        )
         from bot.ta_reference import ta_indicators_from_closes
 
         if not context.args:
             await update.message.reply_text(
                 "Cú pháp: /check <mã>\n"
                 "Ví dụ: /check FPT\n\n"
-                "Lệnh này mở 4 khối giải thích:\n"
-                "① doanh nghiệp · ② thị trường · ③ xu hướng mã · ④ rủi ro & tỷ trọng"
+                "Luồng: dữ liệu → Fundamental → Quant/Risk (nếu đủ) → "
+                "ưu tiên vị thế nếu đang nắm giấy."
             )
             return
         ticker = context.args[0].strip().upper()
         signal, fund = read_signal_and_fundamental(ticker)
-        if signal is None:
-            conn = _conn()
-            try:
-                wl = {
-                    str(r.get("ticker", "")).upper()
-                    for r in repository.get_watchlist_rows(conn)
-                }
-                funds = repository.get_latest_fundamental_scores(conn, [ticker])
-            finally:
-                conn.close()
-            in_univ: bool | None = None
-            try:
-                from data.universe import load_universe_tickers
-                from pipeline.daily_job import load_config
-
-                cfg = load_config()
-                ufile = (cfg.get("universe") or {}).get("file")
-                if ufile:
-                    univ = {str(t).upper() for t in load_universe_tickers(ufile)}
-                    in_univ = ticker in univ
-            except Exception:  # noqa: BLE001
-                in_univ = None
-            await update.message.reply_text(
-                formatters.format_check_unavailable(
-                    ticker,
-                    in_watchlist=ticker in wl,
-                    has_fundamental=ticker in funds,
-                    in_universe_csv=in_univ,
-                )
-            )
-            return
+        position = read_open_position(ticker)
+        in_univ, is_fin, exclude_fin = _universe_and_finance_flags(ticker)
 
         conn = _conn()
         try:
             sector = repository.get_sector_for_ticker(conn, ticker)
             closes = repository.get_price_closes(conn, ticker, limit_days=120)
+            sig_hist = repository.get_signal_history(conn, ticker)
         finally:
             conn.close()
 
@@ -194,33 +322,144 @@ def build_application(token: str):
                 "market": sector.get("market"),
                 "industry": sector.get("industry"),
             }
+        elif is_fin:
+            # Curated fallback — vẫn nói «tài chính» khi thiếu sector_mapping.
+            meta["industry"] = "ngành tài chính (ước tính)"
         if closes and closes[-1].get("close") is not None:
             try:
                 meta["last_close"] = float(closes[-1]["close"])
             except (TypeError, ValueError):
                 pass
         ta = ta_indicators_from_closes(closes)
-        text = formatters.format_signal_message(
-            signal, fund, ta_indicators=ta, meta=meta
+
+        state = formatters.resolve_check_state(
+            in_universe=in_univ,
+            is_financial=is_fin,
+            exclude_financials=exclude_fin,
+            fund=fund,
+            signal=signal,
+            has_open_position=position is not None,
+        )
+        text = formatters.format_check_by_state(
+            state,
+            ticker,
+            fund=fund,
+            signal=signal,
+            position=position,
+            ta_indicators=ta,
+            meta=meta,
+            w_max=_load_w_max(),
         )
         await update.message.reply_text(text)
 
-        # Gửi PNG giá nếu đã có đủ bars (không gọi vendor)
-        if len(closes) >= 2:
-            out = Path("store/charts") / f"{ticker}_price.png"
-            try:
-                path = render_price_chart(ticker, closes, out)
-            except ChartDataError:
-                return
+        async def _send_png(path: Path, caption: str) -> None:
             with path.open("rb") as handle:
                 await update.message.reply_photo(
                     photo=InputFile(handle, filename=path.name),
-                    caption=(
-                        f"{ticker} — giá đóng cửa gần đây\n"
-                        f"Chi tiết: /check {ticker} · TA tham khảo: /chart {ticker} ta\n\n"
-                        f"{formatters.DISCLAIMER}"
-                    ),
+                    caption=caption,
                 )
+
+        chart_dir = Path("store/charts")
+        pass_like = state in {
+            formatters.CHECK_PASS,
+            formatters.CHECK_PASS_NO_SIGNAL,
+            formatters.CHECK_WATCH,
+            formatters.CHECK_POSITION,
+        }
+        price_only_states = {
+            formatters.CHECK_EXCLUDED_FINANCIAL,
+            formatters.CHECK_INSUFFICIENT,
+            formatters.CHECK_FAIL,
+            formatters.CHECK_OUT_OF_SCOPE,
+        }
+
+        # Pack: PASS(+WATCH/POSITION) = price → fundamental → ta → risk;
+        # EXCLUDED/INSUFF(/FAIL) = price nếu có; prob chỉ khi có MC outcomes.
+        if len(closes) >= 2 and (pass_like or state in price_only_states):
+            try:
+                path = render_price_chart(
+                    ticker, closes, chart_dir / f"{ticker}_price.png"
+                )
+                await _send_png(
+                    path,
+                    f"{ticker} — giá đóng cửa gần đây\n"
+                    f"{formatters.DISCLAIMER}",
+                )
+            except ChartDataError:
+                pass
+
+        if pass_like and fund:
+            try:
+                path = render_fundamental_radar_chart(
+                    ticker,
+                    float(fund.get("growth_score") or float("nan")),
+                    float(fund.get("quality_score") or float("nan")),
+                    float(fund.get("safety_score") or float("nan")),
+                    float(fund.get("valuation_score") or float("nan")),
+                    chart_dir / f"{ticker}_fundamental.png",
+                )
+                await _send_png(path, f"{ticker} — radar 4 trụ cơ bản")
+            except (ChartDataError, TypeError, ValueError):
+                pass
+
+        if pass_like and len(closes) >= 20:
+            try:
+                path = render_ta_reference_chart(
+                    ticker, list(closes), ta, chart_dir / f"{ticker}_ta.png"
+                )
+                await _send_png(
+                    path,
+                    f"{ticker} — TA tham khảo (không ra tín hiệu)",
+                )
+            except ChartDataError:
+                pass
+
+        if pass_like and len(closes) >= 5:
+            try:
+                sigma_hist = [
+                    {"date": r["date"], "sigma_hat": r["sigma_hat"]}
+                    for r in sig_hist
+                    if r.get("sigma_hat") is not None
+                ]
+                out_risk = chart_dir / f"{ticker}_risk.png"
+                if len(sigma_hist) >= 5:
+                    path = render_garch_risk_band_chart(
+                        ticker, list(closes), sigma_hist, out_risk
+                    )
+                else:
+                    path = render_realized_vol_band_chart(
+                        ticker, list(closes), out_risk
+                    )
+                await _send_png(path, f"{ticker} — dải biến động")
+            except ChartDataError:
+                pass
+
+        # prob chỉ khi store có MC outcomes (không bịa)
+        if pass_like and signal:
+            reason: dict = {}
+            raw = signal.get("reason_json")
+            if isinstance(raw, dict):
+                reason = raw
+            elif raw:
+                try:
+                    import json as _json
+
+                    reason = _json.loads(str(raw))
+                except (TypeError, ValueError):
+                    reason = {}
+            outcomes = reason.get("mc_outcomes") or reason.get(
+                "monte_carlo_outcomes"
+            )
+            if outcomes:
+                try:
+                    path = render_monte_carlo_distribution_chart(
+                        ticker,
+                        outcomes,
+                        chart_dir / f"{ticker}_prob.png",
+                    )
+                    await _send_png(path, f"{ticker} — Monte Carlo (store)")
+                except ChartDataError:
+                    pass
 
     async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         conn = _conn()
@@ -228,7 +467,9 @@ def build_application(token: str):
             rows = repository.get_open_positions(conn)
         finally:
             conn.close()
-        await update.message.reply_text(formatters.format_positions(rows))
+        await update.message.reply_text(
+            formatters.format_positions(rows, w_max=_load_w_max())
+        )
 
     async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import InputFile
@@ -237,9 +478,12 @@ def build_application(token: str):
             ChartDataError,
             render_backtest_equity_curve_chart,
             render_drawdown_chart,
+            render_pnl_is_os_chart,
             render_regime_conditional_equity_chart,
             render_rolling_sharpe_chart,
             render_trade_pnl_histogram,
+            render_turnover_chart,
+            render_yearly_stats_chart,
         )
 
         scope = context.args[0].strip() if context.args else "portfolio"
@@ -248,18 +492,51 @@ def build_application(token: str):
             rows = repository.get_backtest_results(conn, scope)
             scopes = repository.list_backtest_scopes(conn)
             regime_hist = repository.get_market_regime_history(conn)
+            run_id_preview = str(rows[0]["run_id"]) if rows else None
+            checks = (
+                repository.get_backtest_checks(
+                    conn, scope, "framework", run_id_preview
+                )
+                if run_id_preview
+                else []
+            )
+            yearly = (
+                repository.get_yearly_breakdown(
+                    conn, scope, "framework", run_id_preview
+                )
+                if run_id_preview
+                else []
+            )
         finally:
             conn.close()
-        await update.message.reply_text(
+        await reply_text_safe(
+            update,
             formatters.format_backtest_results(
-                rows, scope, available_scopes=scopes
-            )
+                rows,
+                scope,
+                available_scopes=scopes,
+                checks=checks,
+                yearly=yearly,
+            ),
         )
         if not rows:
             return
         run_id = str(rows[0].get("run_id") or "latest")
         chart_dir = Path("store/charts")
         dbp = _db_path()
+
+        # OOS split: ngày đầu equity framework (khi có) — không tự chọn để đẹp số.
+        split_date = None
+        fw = next((r for r in rows if r.get("baseline") == "framework"), None)
+        if fw and fw.get("equity_curve_json"):
+            try:
+                import json as _json
+
+                curve = _json.loads(str(fw["equity_curve_json"]))
+                if isinstance(curve, list) and curve:
+                    split_date = str(curve[0].get("date") or "") or None
+            except (TypeError, ValueError):
+                split_date = None
 
         async def _send_chart(path: Path, caption: str) -> None:
             with path.open("rb") as handle:
@@ -274,11 +551,12 @@ def build_application(token: str):
                 run_id,
                 chart_dir / f"backtest_{scope}_{run_id}_equity.png",
                 db_path=dbp,
+                align_to_oos=True,
             )
             await _send_chart(
                 eq_path,
-                f"Đường vốn ablation · {scope} · {run_id}\n"
-                "(Nghiên cứu — không phải NAV live)",
+                f"Đường vốn cùng khung OOS · {scope} · {run_id}\n"
+                "(Nghiên cứu — không phải NAV live; rebase=1)",
             )
         except ChartDataError:
             pass
@@ -289,7 +567,10 @@ def build_application(token: str):
                 chart_dir / f"backtest_{scope}_{run_id}_dd.png",
                 db_path=dbp,
             )
-            await _send_chart(dd_path, f"Drawdown · {scope} · {run_id}")
+            await _send_chart(
+                dd_path,
+                f"Drawdown (framework curve) · {scope} · {run_id}",
+            )
         except ChartDataError:
             pass
         try:
@@ -300,6 +581,42 @@ def build_application(token: str):
                 db_path=dbp,
             )
             await _send_chart(rs_path, f"Rolling Sharpe · {scope} · {run_id}")
+        except ChartDataError:
+            pass
+        if split_date:
+            try:
+                isos = render_pnl_is_os_chart(
+                    scope,
+                    run_id,
+                    split_date,
+                    chart_dir / f"backtest_{scope}_{run_id}_isos.png",
+                    db_path=dbp,
+                )
+                await _send_chart(
+                    isos,
+                    f"IS/OS band · split={split_date} · {scope}",
+                )
+            except ChartDataError:
+                pass
+        try:
+            ypath = render_yearly_stats_chart(
+                scope,
+                "framework",
+                run_id,
+                chart_dir / f"backtest_{scope}_{run_id}_yearly.png",
+                db_path=dbp,
+            )
+            await _send_chart(ypath, f"Sharpe theo năm · {scope}")
+        except ChartDataError:
+            pass
+        try:
+            tpath = render_turnover_chart(
+                scope,
+                run_id,
+                chart_dir / f"backtest_{scope}_{run_id}_turnover.png",
+                db_path=dbp,
+            )
+            await _send_chart(tpath, f"Turnover proxy · {scope}")
         except ChartDataError:
             pass
         try:
@@ -635,6 +952,35 @@ def build_application(token: str):
     app.add_handler(CommandHandler("chart", chart_cmd))
     app.add_handler(CommandHandler("subscribe", subscribe_cmd))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe_cmd))
+
+    async def bare_ticker_msg(
+        update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """ban_phac P2: nhập ticker thuần (vd FPT) → cùng luồng /check — không Quant on-demand."""
+        text = (update.message.text or "").strip().upper()
+        if not re.fullmatch(r"[A-Z]{3}", text):
+            return
+        context.args = [text]
+        await check_cmd(update, context)
+
+    app.add_handler(
+        MessageHandler(filters.TEXT & ~filters.COMMAND, bare_ticker_msg)
+    )
+
+    async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """Error handler nhẹ — không lộ traceback cho user."""
+        log.exception("Telegram handler error: %s", context.error)
+        message = getattr(update, "effective_message", None) if update else None
+        if message is not None:
+            try:
+                await message.reply_text(
+                    "Bot gặp lỗi tạm thời. Thử lại /help hoặc /check <mã>.\n\n"
+                    + formatters.DISCLAIMER
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
+    app.add_error_handler(on_error)
     return app
 
 

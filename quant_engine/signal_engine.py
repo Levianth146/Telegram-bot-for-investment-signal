@@ -102,14 +102,22 @@ def _decide_action(
     bull_threshold: float,
     bear_threshold: float,
     min_tstat: float,
+    fundamental_view: str | None = None,
 ) -> str:
+    """Quyết định BUY/SELL/WATCH; WATCH Fundamental không bao giờ ra BUY."""
     if pd.isna(alpha_eff) or pd.isna(tstat):
+        action = "WATCH"
+    elif p_bull >= bull_threshold and alpha_eff > 0 and tstat >= min_tstat:
+        action = "BUY"
+    elif p_bull <= bear_threshold or (alpha_eff < 0 and tstat <= -min_tstat):
+        action = "SELL"
+    else:
+        action = "WATCH"
+    # Cap: Fundamental WATCH/FAIL → không BUY chính thức (ban_phac §1.1).
+    view = str(fundamental_view or "").strip().upper()
+    if view in {"WATCH", "FAIL"} and action == "BUY":
         return "WATCH"
-    if p_bull >= bull_threshold and alpha_eff > 0 and tstat >= min_tstat:
-        return "BUY"
-    if p_bull <= bear_threshold or (alpha_eff < 0 and tstat <= -min_tstat):
-        return "SELL"
-    return "WATCH"
+    return action
 
 
 def generate_signals(
@@ -308,17 +316,30 @@ def generate_signals(
         size = min(size, float(weights.get(ticker, w_max))) * float(hawkes_mult)
         stop = stop_loss_price(entry_price, sigma_hat, k=stop_k)
 
-        action = _decide_action(
+        fund_row = scores.get(ticker) or {}
+        fund_view = str(fund_row.get("fundamental_view") or "").upper() or None
+        tstat_for_action = (
+            tstat
+            if alpha_method == "kalman_slope"
+            else (1.0 if (not pd.isna(alpha_eff) and alpha_eff > 0) else -1.0)
+        )
+        action_uncapped = _decide_action(
             p_bull=p_bull,
             alpha_eff=alpha_eff,
-            tstat=(
-                tstat
-                if alpha_method == "kalman_slope"
-                else (1.0 if (not pd.isna(alpha_eff) and alpha_eff > 0) else -1.0)
-            ),
+            tstat=tstat_for_action,
             bull_threshold=bull_threshold,
             bear_threshold=bear_threshold,
             min_tstat=min_tstat,
+            fundamental_view=None,
+        )
+        action = _decide_action(
+            p_bull=p_bull,
+            alpha_eff=alpha_eff,
+            tstat=tstat_for_action,
+            bull_threshold=bull_threshold,
+            bear_threshold=bear_threshold,
+            min_tstat=min_tstat,
+            fundamental_view=fund_view,
         )
 
         reason = {
@@ -335,7 +356,10 @@ def generate_signals(
             "hawkes_size_mult": float(hawkes_mult),
             "growth_score": growth,
             "quality_score": quality,
+            "fundamental_view": fund_view,
         }
+        if action_uncapped == "BUY" and action == "WATCH":
+            reason["action_policy"] = "fundamental_watch_no_buy"
 
         p_tp_before_sl = None
         cvar95 = None

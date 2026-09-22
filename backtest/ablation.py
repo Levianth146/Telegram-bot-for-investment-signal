@@ -576,6 +576,7 @@ def _metrics_from_step(step: Mapping[str, Any]) -> dict:
         "calmar",
         "profit_factor",
         "max_drawdown_days",
+        "margin_bps",
         "cvar95_realized",
         "cvar95_calibration_note",
         "sharpe_bull_regime",
@@ -584,12 +585,182 @@ def _metrics_from_step(step: Mapping[str, Any]) -> dict:
     return {k: _json_safe(src.get(k)) for k in keys}
 
 
+def _enrich_metrics_from_equity(
+    source: Mapping[str, Any],
+    config: Mapping[str, Any] | None = None,
+) -> dict:
+    """Bổ sung Sortino/Calmar/margin_bps từ equity_curve nếu artifact cũ thiếu."""
+    from backtest.metrics import compute_metrics
+
+    base = _metrics_from_step(source)
+    curve = source.get("equity_curve")
+    if not isinstance(curve, list) or len(curve) < 2:
+        return base
+    need = any(
+        base.get(k) is None for k in ("sortino", "calmar", "turnover", "margin_bps")
+    )
+    if not need:
+        return base
+    computed = compute_metrics(curve, list(source.get("trades") or []), config)
+    out = dict(base)
+    has_trades = bool(source.get("trades"))
+    for key in (
+        "turnover",
+        "sortino",
+        "calmar",
+        "profit_factor",
+        "max_drawdown_days",
+        "margin_bps",
+    ):
+        if out.get(key) is not None:
+            continue
+        val = computed.get(key)
+        if val is None:
+            continue
+        # Không gán turnover=0 giả khi artifact không có trades (tránh MAX_TURNOVER ảo).
+        if key in {"turnover", "margin_bps"} and not has_trades:
+            continue
+        safe = _json_safe(val)
+        if safe is None:
+            continue
+        out[key] = safe
+    return out
+
+
+def build_backtest_checks(
+    rows_by_baseline: Mapping[str, Mapping[str, Any]],
+    *,
+    run_id: str,
+    scope: str,
+    config: Mapping[str, Any] | None = None,
+    max_position_weight: float | None = None,
+) -> list[dict]:
+    """Đối chiếu ngưỡng đã đăng ký trong ``backtest.checks`` → rows store.
+
+    Gồm MIN_SHARPE_IMPROVEMENT_OOS, MIN_TRADES_FOR_SIGNIFICANCE, MAX_TURNOVER,
+    CONCENTRATED_WEIGHT (max_position_weight_pct).
+    """
+    cfg = dict(config or {})
+    checks_cfg = dict((cfg.get("backtest") or {}).get("checks") or {})
+    min_delta = float(checks_cfg.get("min_sharpe_improvement_oos", 0.10))
+    min_trades = int(checks_cfg.get("min_trades_for_significance", 30))
+    max_to = float(checks_cfg.get("max_turnover_pct", 200))
+    max_w = float(
+        checks_cfg.get(
+            "max_position_weight_pct",
+            (cfg.get("quant_engine") or {}).get("w_max", 0.10),
+        )
+    )
+
+    fw = dict(rows_by_baseline.get("framework") or {})
+    b0 = dict(rows_by_baseline.get("B0_buyhold") or {})
+    out: list[dict] = []
+
+    def _row(
+        name: str,
+        threshold: float,
+        actual: float | None,
+        passed: bool,
+        note: str,
+        baseline: str = "framework",
+    ) -> dict:
+        return {
+            "run_id": run_id,
+            "scope": scope,
+            "baseline": baseline,
+            "check_name": name,
+            "threshold": threshold,
+            "actual_value": _json_safe(actual),
+            "passed": 1 if passed else 0,
+            "note": note,
+        }
+
+    n_trades = fw.get("n_trades")
+    try:
+        n_i = int(n_trades) if n_trades is not None else 0
+    except (TypeError, ValueError):
+        n_i = 0
+    out.append(
+        _row(
+            "MIN_TRADES_FOR_SIGNIFICANCE",
+            float(min_trades),
+            float(n_i),
+            n_i >= min_trades,
+            f"n_trades={n_i}; dưới ngưỡng thì Sharpe chỉ minh hoạ",
+        )
+    )
+
+    try:
+        s_fw = float(fw["sharpe"]) if fw.get("sharpe") is not None else None
+    except (TypeError, ValueError):
+        s_fw = None
+    try:
+        s_b0 = float(b0["sharpe"]) if b0.get("sharpe") is not None else None
+    except (TypeError, ValueError):
+        s_b0 = None
+    delta = (s_fw - s_b0) if s_fw is not None and s_b0 is not None else None
+    out.append(
+        _row(
+            "MIN_SHARPE_IMPROVEMENT_OOS",
+            min_delta,
+            delta,
+            bool(delta is not None and delta >= min_delta),
+            (
+                f"ΔSharpe OOS framework−B0={delta}"
+                if delta is not None
+                else "thiếu Sharpe framework hoặc B0"
+            ),
+        )
+    )
+
+    to = fw.get("turnover")
+    try:
+        to_f = float(to) if to is not None else None
+    except (TypeError, ValueError):
+        to_f = None
+    to_pct_year = (to_f * 252.0 * 100.0) if to_f is not None else None
+    out.append(
+        _row(
+            "MAX_TURNOVER",
+            max_to,
+            to_pct_year,
+            bool(to_pct_year is not None and to_pct_year <= max_to),
+            (
+                f"turnover≈{to_pct_year:.1f}%/năm (ước từ daily)"
+                if to_pct_year is not None
+                else "thiếu turnover — không kết luận"
+            ),
+        )
+    )
+
+    actual_w = max_position_weight
+    if actual_w is None:
+        actual_w = float((cfg.get("quant_engine") or {}).get("w_max", max_w))
+        note_w = (
+            f"design_cap=w_max={actual_w}; "
+            "không có max weight quan sát trong artifact"
+        )
+    else:
+        note_w = f"max_position_weight quan sát={actual_w}"
+    out.append(
+        _row(
+            "CONCENTRATED_WEIGHT",
+            max_w,
+            float(actual_w),
+            float(actual_w) <= max_w + 1e-12,
+            note_w,
+        )
+    )
+    return out
+
+
 def ablation_payload_to_store_rows(
     payload: Mapping[str, Any],
     *,
     run_id: str | None = None,
     run_at: str | None = None,
     scope: str = "portfolio",
+    config: Mapping[str, Any] | None = None,
 ) -> list[dict]:
     """Map ablation JSON → rows cho ``store.backtest_results``.
 
@@ -609,13 +780,14 @@ def ablation_payload_to_store_rows(
         step = by_layer.get(layer_key)
         if not step:
             continue
+        metrics = _enrich_metrics_from_equity(step, config)
         rows.append(
             {
                 "run_id": rid,
                 "run_at": rat,
                 "scope": scope,
                 "baseline": layer_key,
-                **_metrics_from_step(step),
+                **metrics,
                 "equity_curve_json": _equity_curve_json(step),
             }
         )
@@ -636,13 +808,14 @@ def ablation_payload_to_store_rows(
                 break
 
     if fw:
+        metrics = _enrich_metrics_from_equity(fw, config)
         rows.append(
             {
                 "run_id": rid,
                 "run_at": rat,
                 "scope": scope,
                 "baseline": "framework",
-                **_metrics_from_step(fw),
+                **metrics,
                 "equity_curve_json": _equity_curve_json(fw),
             }
         )
@@ -651,30 +824,120 @@ def ablation_payload_to_store_rows(
     return [r for r in rows if r.get("baseline") in _VALID_BASELINES]
 
 
+def ablation_payload_to_yearly_rows(
+    payload: Mapping[str, Any],
+    *,
+    run_id: str,
+    scope: str = "portfolio",
+    config: Mapping[str, Any] | None = None,
+) -> list[dict]:
+    """Sinh ``backtest_yearly_breakdown`` từ equity_curve framework (OOS ưu tiên)."""
+    from backtest.metrics import yearly_breakdown_from_equity
+
+    source: Mapping[str, Any] | None = None
+    wf = payload.get("walk_forward")
+    if isinstance(wf, dict) and wf.get("equity_curve"):
+        source = wf
+    else:
+        for step in payload.get("steps") or []:
+            if isinstance(step, dict) and step.get("layer") == "risk":
+                source = step
+                break
+    if not source:
+        return []
+    curve = list(source.get("equity_curve") or [])
+    yearly = yearly_breakdown_from_equity(
+        curve, list(source.get("trades") or []), config
+    )
+    return [
+        {
+            "run_id": run_id,
+            "scope": scope,
+            "baseline": "framework",
+            **{
+                k: _json_safe(y.get(k))
+                for k in (
+                    "year",
+                    "cagr",
+                    "sharpe",
+                    "max_drawdown",
+                    "turnover",
+                    "margin_bps",
+                    "n_trades",
+                )
+            },
+        }
+        for y in yearly
+    ]
+
+
 def persist_ablation_to_store(
     payload: Mapping[str, Any],
     *,
     db_path: str = "store/bot.db",
     run_id: str | None = None,
     scope: str = "portfolio",
+    config: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Ghi kết quả ablation vào ``backtest_results`` để bot /backtest đọc được."""
+    """Ghi kết quả ablation vào store để bot /backtest đọc được.
+
+    Gồm ``backtest_results`` + ``backtest_checks`` (+ yearly nếu có curve).
+    """
     from store import repository
 
-    rows = ablation_payload_to_store_rows(payload, run_id=run_id, scope=scope)
+    cfg = config
+    if cfg is None:
+        try:
+            cfg = _load_config("pipeline/config.yaml")
+        except OSError:
+            cfg = {}
+
+    rows = ablation_payload_to_store_rows(
+        payload, run_id=run_id, scope=scope, config=cfg
+    )
     if not rows:
         return {"rows": 0, "note": "no persistable baselines in payload"}
+    rid = str(rows[0]["run_id"])
+    by_base = {str(r["baseline"]): r for r in rows}
+    max_w_obs = None
+    for key in ("max_position_weight", "max_size"):
+        if payload.get(key) is not None:
+            try:
+                max_w_obs = float(payload[key])
+            except (TypeError, ValueError):
+                max_w_obs = None
+            break
+    checks = build_backtest_checks(
+        by_base,
+        run_id=rid,
+        scope=scope,
+        config=cfg,
+        max_position_weight=max_w_obs,
+    )
+    yearly = ablation_payload_to_yearly_rows(
+        payload, run_id=rid, scope=scope, config=cfg
+    )
+
     conn = repository.get_connection(db_path)
     try:
         repository.init_schema(conn)
         repository.upsert_backtest_results(conn, rows)
+        if checks:
+            repository.upsert_backtest_checks(conn, checks)
+        if yearly:
+            repository.upsert_yearly_breakdown(conn, yearly)
     finally:
         conn.close()
     return {
         "rows": len(rows),
-        "run_id": rows[0]["run_id"],
+        "run_id": rid,
         "baselines": [r["baseline"] for r in rows],
-        "note": f"upserted {len(rows)} backtest_results rows",
+        "checks": len(checks),
+        "yearly": len(yearly),
+        "note": (
+            f"upserted {len(rows)} backtest_results, "
+            f"{len(checks)} checks, {len(yearly)} yearly"
+        ),
     }
 
 
@@ -827,7 +1090,14 @@ def main(argv: list[str] | None = None) -> int:
             "cagr": _json_safe(wm.get("cagr")),
             "sharpe": _json_safe(wm.get("sharpe")),
             "max_drawdown": _json_safe(wm.get("max_drawdown")),
+            "win_rate": _json_safe(wm.get("win_rate")),
             "n_trades": wm.get("n_trades"),
+            "turnover": _json_safe(wm.get("turnover")),
+            "sortino": _json_safe(wm.get("sortino")),
+            "calmar": _json_safe(wm.get("calmar")),
+            "profit_factor": _json_safe(wm.get("profit_factor")),
+            "max_drawdown_days": _json_safe(wm.get("max_drawdown_days")),
+            "margin_bps": _json_safe(wm.get("margin_bps")),
             "equity_curve": list(wf.get("equity_curve") or []),
             "folds": [
                 {
@@ -866,6 +1136,10 @@ def main(argv: list[str] | None = None) -> int:
                 "max_drawdown": _json_safe(s.get("max_drawdown")),
                 "win_rate": _json_safe(s.get("win_rate")),
                 "n_trades": s.get("n_trades"),
+                "turnover": _json_safe((s.get("metrics") or {}).get("turnover")),
+                "sortino": _json_safe((s.get("metrics") or {}).get("sortino")),
+                "calmar": _json_safe((s.get("metrics") or {}).get("calmar")),
+                "margin_bps": _json_safe((s.get("metrics") or {}).get("margin_bps")),
                 "delta_sharpe": _json_safe(s.get("delta_sharpe")),
                 "decision": s.get("decision"),
                 "equity_curve": list(s.get("equity_curve") or []),

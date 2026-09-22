@@ -5,12 +5,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Mapping
 
+# Fallback smoke khi config thiếu smoke_file
+_DEFAULT_SMOKE_FILE = "data/universe/hose_liquid_35.csv"
+
 
 def load_universe_tickers(path: str | Path) -> list[str]:
-    """Load unique uppercase tickers from a one-column CSV (header optional).
+    """Đọc ticker duy nhất (uppercase) từ CSV một cột (header tuỳ chọn).
 
-    Accepts a ``ticker`` header or a bare list of codes (one per line).
-    Blank lines and ``#`` comments are ignored.
+    Chấp nhận header ``ticker`` hoặc danh sách mã trần (một dòng một mã).
+    Bỏ dòng trống và comment ``#``.
     """
     file_path = Path(path)
     if not file_path.is_file():
@@ -35,12 +38,48 @@ def load_universe_tickers(path: str | Path) -> list[str]:
     return tickers
 
 
+def fundamental_universe_file(config: Mapping[str, Any] | None) -> str | None:
+    """Đường dẫn CSV Tier1 (Fundamental / OUT_OF_SCOPE).
+
+    Ưu tiên ``universe.fundamental_file``, fallback ``universe.file``.
+    """
+    block = dict((config or {}).get("universe") or {})
+    path = block.get("fundamental_file") or block.get("file")
+    if not path:
+        return None
+    return str(path)
+
+
+def smoke_universe_file(config: Mapping[str, Any] | None) -> str:
+    """CSV smoke / ablation / fallback nhanh (mặc định hose_liquid_35)."""
+    block = dict((config or {}).get("universe") or {})
+    path = block.get("smoke_file") or _DEFAULT_SMOKE_FILE
+    return str(path)
+
+
+def quant_from_watchlist(config: Mapping[str, Any] | None) -> bool:
+    """True nếu daily Quant chỉ lấy mã từ watchlist (không kéo full Tier1)."""
+    block = dict((config or {}).get("universe") or {})
+    # Mặc định True — khớp framework hai tầng
+    if "quant_from_watchlist" not in block:
+        return True
+    return bool(block.get("quant_from_watchlist"))
+
+
+def load_fundamental_universe(config: Mapping[str, Any] | None) -> list[str]:
+    """Load danh sách ticker Tier1 từ config (fundamental_file / file)."""
+    path = fundamental_universe_file(config)
+    if not path:
+        return []
+    return load_universe_tickers(path)
+
+
 def resolve_tickers(
     *,
     tickers_csv: str = "",
     universe_file: str | Path | None = None,
 ) -> list[str]:
-    """Prefer ``--tickers`` comma list; else load ``--universe-file``."""
+    """Ưu tiên ``--tickers`` CSV; không có thì load ``--universe-file``."""
     from_cli = [t.strip().upper() for t in str(tickers_csv).split(",") if t.strip()]
     if from_cli:
         return list(dict.fromkeys(from_cli))

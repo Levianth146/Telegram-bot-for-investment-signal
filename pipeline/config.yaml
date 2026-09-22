@@ -3,9 +3,16 @@
 # xử lý trường hợp enabled=false bằng giá trị fallback (xem docs/ARCHITECTURE.md).
 
 universe:
-  name: "hose_liquid_35"
-  size: 35
-  file: "data/universe/hose_liquid_35.csv"
+  name: "vn100"
+  size: 100
+  # Tier1 Fundamental (quarterly) + OUT_OF_SCOPE cho bot — CSV VN100
+  fundamental_file: "data/universe/vn100.csv"
+  # Alias mặc định (độc giả cũ đọc universe.file); trùng fundamental_file
+  file: "data/universe/vn100.csv"
+  # Smoke / ablation / fallback nhanh — không xóa CSV này
+  smoke_file: "data/universe/hose_liquid_35.csv"
+  # Tầng 2 Quant (daily): chỉ watchlist PASS/WATCH (+ benchmark VNINDEX)
+  quant_from_watchlist: true
   # V1: chỉ HOSE + HNX — không phân tích UPCOM (và sàn ngoài list)
   allowed_exchanges: [HOSE, HNX]
 
@@ -116,6 +123,7 @@ backtest:
     min_sharpe_improvement_oos: 0.10   # Sharpe framework - Sharpe B0 phải >= mức này (OOS)
     min_trades_for_significance: 30    # dưới ngưỡng này thì mọi Sharpe/Calmar chỉ mang tính minh hoạ
     max_turnover_pct: 200              # % NAV/năm — turnover vượt mức này thì chi phí giao dịch có thể ăn hết alpha
+    max_position_weight_pct: 0.10      # CONCENTRATED_WEIGHT — khớp quant_engine.w_max; vượt = FAIL
 
 sector_classification:
   # Hạ tầng cho scoring z-score "theo ngành" ở mục 10 — xem store/schema.sql:sector_mapping.

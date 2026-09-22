@@ -52,14 +52,21 @@ TA_REFERENCE_LABEL = "📊 Tham khảo thêm (không dùng để ra tín hiệu)
 
 _ACTION_VI = {
     "BUY": "Nghiêng mua / giữ",
-    "SELL": "Nghiêng giảm / tránh",
+    "SELL": "Tránh mua mới",
     "WATCH": "Theo dõi — chưa đủ tín hiệu rõ",
 }
 
+# ban_phac §9 — không dùng «Khuyến nghị mua»; dùng «Tín hiệu hệ thống».
 _ACTION_BANNER = {
-    "BUY": "🟢 KHUYẾN NGHỊ: MUA",
-    "SELL": "🔴 KHUYẾN NGHỊ: GIẢM / TRÁNH",
-    "WATCH": "🟡 KHUYẾN NGHỊ: THEO DÕI",
+    "BUY": "🟢 Tín hiệu hệ thống: MUA",
+    "SELL": "🔴 Tín hiệu hệ thống: TRÁNH MUA MỚI",
+    "WATCH": "🟡 Tín hiệu hệ thống: THEO DÕI",
+}
+
+_POSITION_ACTION_BANNER = {
+    "HOLD": "🟢 Trạng thái vị thế: GIỮ (HOLD)",
+    "REDUCE": "🟡 Trạng thái vị thế: GIẢM TỶ TRỌNG (REDUCE)",
+    "EXIT": "🔴 Trạng thái vị thế: THOÁT (EXIT)",
 }
 
 _VIEW_VI = {
@@ -67,6 +74,16 @@ _VIEW_VI = {
     "WATCH": "Theo dõi — còn điểm cần xác nhận (thường là định giá)",
     "FAIL": "Loại — chưa đủ điều kiện bộ lọc cơ bản",
 }
+
+# Trạng thái /check (ban_phac §6 + plan Phase A) — bot chỉ đọc store/.
+CHECK_OUT_OF_SCOPE = "OUT_OF_SCOPE"
+CHECK_EXCLUDED_FINANCIAL = "EXCLUDED_FINANCIAL"
+CHECK_INSUFFICIENT = "INSUFFICIENT_FUNDAMENTAL"
+CHECK_FAIL = "FUNDAMENTAL_FAIL"
+CHECK_WATCH = "FUNDAMENTAL_WATCH"
+CHECK_PASS = "FUNDAMENTAL_PASS"
+CHECK_PASS_NO_SIGNAL = "FUNDAMENTAL_PASS_NO_SIGNAL"
+CHECK_POSITION = "POSITION_AWARE"
 
 
 def translate_regime(p_bull: float) -> str:
@@ -102,15 +119,55 @@ def translate_kalman_trend(t_stat: float) -> str:
 
 
 def translate_weight_method(method: Any) -> str:
-    """Giải thích cách chia tỷ trọng — không lộ tên module."""
+    """Giải thích cách chia tỷ trọng — không lộ tên module.
+
+    Lưu ý: tỷ trọng *từng mã* trên /signals và /positions là sizing GARCH
+    (σ̂ → size), không phải equal-weight BL. Equal-weight chỉ là fallback
+    khi tối ưu danh mục nâng cao tắt — khác với size từng vị thế.
+    """
     key = str(method or "").strip().lower()
     if key in {"equal_weight", "equal-weight", "ew"}:
-        return "chia đều các mã trong rổ"
+        return "chia đều các mã trong rổ (fallback danh mục; size mã vẫn theo biến động)"
     if "litterman" in key or key == "bl":
         return "tối ưu theo quan điểm mô hình (Black–Litterman)"
+    if "garch" in key or key in {"vol_target", "volatility_target", "risk"}:
+        return "theo biến động mục tiêu (GARCH), có trần %/mã"
     if not key or key in {"—", "-", "none", "null"}:
-        return "chia đều các mã trong rổ"
+        return "theo biến động mục tiêu (GARCH), có trần %/mã"
     return "theo quy tắc danh mục hiện tại"
+
+
+def _fmt_size_pct(size: Any, digits: int = 1) -> str:
+    """Định dạng size thập phân → % hiển thị."""
+    if size is None:
+        return "—"
+    try:
+        return f"{float(size) * 100:.{digits}f}%"
+    except (TypeError, ValueError):
+        return "—"
+
+
+def size_hits_w_max(size: Any, w_max: float = 0.10, *, tol: float = 1e-9) -> bool:
+    """True nếu size chạm/vượt trần w_max (GARCH min(w_max, σ_target/σ̂))."""
+    if size is None:
+        return False
+    try:
+        return float(size) + tol >= float(w_max)
+    except (TypeError, ValueError):
+        return False
+
+
+def format_size_with_cap(
+    size: Any,
+    *,
+    w_max: float = 0.10,
+    digits: int = 1,
+) -> str:
+    """Chuỗi tỷ trọng + ghi chú chạm trần nếu có."""
+    pct = _fmt_size_pct(size, digits)
+    if size_hits_w_max(size, w_max):
+        return f"{pct} (chạm trần {float(w_max) * 100:.0f}%/mã)"
+    return pct
 
 
 def translate_sigma_method(method: Any) -> str:
@@ -151,6 +208,43 @@ def translate_fundamental_view(view: Any) -> str:
     if gloss:
         return f"{key} — {gloss}"
     return key
+
+
+def cap_action_for_fundamental(action: Any, fundamental_view: Any) -> str:
+    """WATCH Fundamental không được nâng thành BUY (ban_phac §1.1 / plan P0)."""
+    act = str(action or "WATCH").strip().upper()
+    view = str(fundamental_view or "").strip().upper()
+    if view == "WATCH" and act == "BUY":
+        return "WATCH"
+    if view == "FAIL":
+        return "WATCH"
+    return act if act in {"BUY", "SELL", "WATCH"} else "WATCH"
+
+
+def map_position_action(action: Any) -> str:
+    """BUY/SELL/WATCH (nghiên cứu) → HOLD/REDUCE/EXIT khi đang nắm giấy."""
+    act = str(action or "WATCH").strip().upper()
+    if act == "BUY":
+        return "HOLD"
+    if act == "SELL":
+        return "EXIT"
+    return "REDUCE"
+
+
+def _classification_reason(fundamental_row: Mapping[str, Any] | None) -> str:
+    if not fundamental_row:
+        return ""
+    payload = _headline_payload(fundamental_row)
+    raw = payload.get("classification_reason") or ""
+    if isinstance(raw, list):
+        return " | ".join(str(x) for x in raw if x)
+    return str(raw or "").strip()
+
+
+def is_insufficient_fundamental(fundamental_row: Mapping[str, Any] | None) -> bool:
+    """True khi Layer 1 ghi thiếu dữ liệu (không đồng nhất với FAIL)."""
+    reason = _classification_reason(fundamental_row).upper()
+    return "INSUFFICIENT" in reason
 
 
 def _rsi_gloss(rsi: float) -> str:
@@ -338,7 +432,7 @@ def _headline_block_lines(fundamental_row: Mapping[str, Any]) -> list[str]:
 
 
 def format_welcome() -> str:
-    """/start — chào + 3 bước bắt đầu nhanh (framework mục 9.7)."""
+    """/start — 3 CTA theo ban_phac §3 (không ép subscribe trước)."""
     return "\n".join(
         [
             "Xin chào — Bot tín hiệu đầu tư (sản phẩm học thuật).",
@@ -346,12 +440,13 @@ def format_welcome() -> str:
             "Bot chỉ hiển thị kết quả đã tính sẵn sau mỗi phiên "
             "(không tự tải lại dữ liệu khi bạn gõ lệnh).",
             "",
-            "▶ Bắt đầu nhanh (3 bước):",
-            "  1. /subscribe — nhận tin khi có tín hiệu phiên mới",
-            "  2. /signals — xem gợi ý mua / giảm / theo dõi hôm nay",
-            "  3. /check FPT — giải thích chi tiết một mã",
+            "▶ Chọn hướng bắt đầu:",
+            "  📊 Xem thị trường & cơ hội → /signals",
+            "  🔎 Tra cứu cổ phiếu → /check FPT",
+            "  💼 Danh mục / vị thế → /positions",
             "",
-            "Gõ /help để xem đầy đủ lệnh và ý nghĩa từng lệnh.",
+            "Tuỳ chọn: /subscribe để nhận tin khi có tín hiệu phiên mới.",
+            "Gõ /help để xem đầy đủ lệnh.",
             "",
             DISCLAIMER,
         ]
@@ -389,7 +484,8 @@ def format_help() -> str:
             "⚠ Lưu ý hay gây hiểu nhầm:",
             "• “Khí hậu thị trường” trên /signals là chung cả rổ "
             "(thường theo VNINDEX) — cùng một mức cho mọi mã",
-            "• Tỷ trọng đang chia đều; khác nhau rõ khi bật tối ưu danh mục nâng cao",
+            "• Tỷ trọng từng mã = sizing theo biến động (GARCH / σ̂), "
+            f"có trần w_max — không phải chia đều; Black–Litterman chỉ khi bật cờ riêng",
             "• Khác biệt từng mã: hành động, điểm xu hướng, biến động, stop → /check",
             "• Khối “Tham khảo thêm” (RSI…) chỉ để đối chiếu, không quyết định mua/bán",
             "",
@@ -398,14 +494,21 @@ def format_help() -> str:
     )
 
 
-def format_signals_list(signal_rows: list[dict]) -> str:
-    """Một dòng/mã cho /signals — nhóm theo hành động + CTA /check."""
+def format_signals_list(
+    signal_rows: list[dict],
+    *,
+    w_max: float = 0.10,
+) -> str:
+    """/signals — nhóm theo độ mạnh (ban_phac §4), không alphabet-first.
+
+    Size hiển thị = GARCH position_size (≠ equal-weight / BL).
+    """
     if not signal_rows:
         return (
-            "📭 Chưa có tín hiệu phiên nào.\n\n"
-            "Thường có sau khi hệ thống chạy xong phiên (khoảng sau 15:00).\n"
-            "Nếu vẫn trống → báo admin kiểm tra lịch daily.\n\n"
-            "Tiếp: /subscribe để nhận tin khi có dữ liệu.\n\n"
+            "📭 Chưa có tín hiệu phiên nào trong store.\n\n"
+            "Danh sách này chỉ phản ánh mã thuộc pipeline chiến lược "
+            "(watchlist sau lọc quý + daily Quant) — không phải toàn bộ thị trường.\n\n"
+            "Tiếp: /subscribe · /watchlist\n\n"
             + DISCLAIMER
         )
 
@@ -420,13 +523,26 @@ def format_signals_list(signal_rows: list[dict]) -> str:
         p_vals_sorted = sorted(p_vals)
         p_shared = p_vals_sorted[len(p_vals_sorted) // 2]
 
-    n_buy = sum(1 for r in signal_rows if str(r.get("action")).upper() == "BUY")
-    n_sell = sum(1 for r in signal_rows if str(r.get("action")).upper() == "SELL")
-    n_watch = sum(1 for r in signal_rows if str(r.get("action")).upper() == "WATCH")
+    # Cap hiển thị: WATCH Fundamental không hiện như MUA.
+    normalised: list[dict] = []
+    for row in signal_rows:
+        item = dict(row)
+        item["action"] = cap_action_for_fundamental(
+            row.get("action"), row.get("fundamental_view")
+        )
+        normalised.append(item)
+
+    n_buy = sum(1 for r in normalised if str(r.get("action")).upper() == "BUY")
+    n_sell = sum(1 for r in normalised if str(r.get("action")).upper() == "SELL")
+    n_watch = sum(1 for r in normalised if str(r.get("action")).upper() == "WATCH")
+    n_at_cap = sum(
+        1 for r in normalised if size_hits_w_max(r.get("size"), w_max)
+    )
 
     lines = [
         f"📋 Tín hiệu phiên gần nhất{f' · {day}' if day else ''}",
-        f"Tóm tắt: Mua {n_buy} · Giảm {n_sell} · Theo dõi {n_watch}",
+        "Chỉ mã thuộc strategy pipeline (không đại diện toàn thị trường).",
+        f"Tóm tắt: Đáng chú ý {n_buy} · Theo dõi {n_watch} · Tránh mua mới {n_sell}",
         "",
     ]
     if p_shared is not None:
@@ -435,44 +551,53 @@ def format_signals_list(signal_rows: list[dict]) -> str:
             f"🌤 Khí hậu thị trường (chung mọi mã): nghiêng tăng ~{pct}"
         )
         lines.append(f"   → {translate_regime(p_shared)}")
-        lines.append(
-            "Tỷ trọng dưới đây đang chia đều. "
-            "Số khác nhau theo mã: điểm xu hướng / biến động."
-        )
         lines.append("")
 
-    order = ("BUY", "SELL", "WATCH")
+    lines.append(
+        f"Tỷ trọng gợi ý = sizing GARCH (biến động), trần {float(w_max) * 100:.0f}%/mã "
+        "— không chia đều."
+    )
+    if n_at_cap:
+        lines.append(
+            f"⚠ {n_at_cap} mã đang chạm trần w_max "
+            f"({float(w_max) * 100:.0f}%)."
+        )
+    lines.append("")
+
+    # ban_phac §4: đáng chú ý → theo dõi → tránh mua mới; trong nhóm sort theo |score|.
+    order = ("BUY", "WATCH", "SELL")
     headers = {
-        "BUY": "🟢 MUA",
-        "SELL": "🔴 GIẢM / TRÁNH",
-        "WATCH": "🟡 THEO DÕI",
+        "BUY": "🟢 Tín hiệu đáng chú ý",
+        "WATCH": "🟡 Theo dõi",
+        "SELL": "🔴 Tránh mua mới",
     }
     by_action: dict[str, list[dict]] = {k: [] for k in order}
     other: list[dict] = []
-    for row in signal_rows:
+    for row in normalised:
         act = str(row.get("action") or "?").upper()
         if act in by_action:
             by_action[act].append(row)
         else:
             other.append(row)
 
+    def _strength_key(row: dict) -> float:
+        try:
+            return abs(float(row.get("score")))
+        except (TypeError, ValueError):
+            return -1.0
+
     for act in order:
-        rows = by_action[act]
+        rows = sorted(by_action[act], key=_strength_key, reverse=True)
         if not rows:
             continue
         lines.append(f"── {headers[act]} ({len(rows)}) ──")
         for row in rows:
-            size = row.get("size")
-            size_pct = (
-                f"{float(size) * 100:.1f}%"
-                if size is not None
-                else "—"
-            )
+            size_txt = format_size_with_cap(row.get("size"), w_max=w_max)
             ticker = row.get("ticker")
             lines.append(
                 f"• {ticker}  | điểm {_fmt_num(row.get('score'))}  "
                 f"| biến động {_fmt_num(row.get('sigma_hat'), 4)}  "
-                f"| tỷ trọng ≈{size_pct}"
+                f"| tỷ trọng {size_txt}"
             )
             lines.append(f"  → Chi tiết: /check {ticker}")
         lines.append("")
@@ -485,8 +610,7 @@ def format_signals_list(signal_rows: list[dict]) -> str:
 
     lines.extend(
         [
-            "Mẹo: /check <mã> để xem regime · alpha · rủi ro & tỷ trọng; "
-            "/chart <mã> price để xem giá.",
+            "Mẹo: /check <mã> để xem giải thích đầy đủ.",
             "",
             DISCLAIMER,
         ]
@@ -511,8 +635,8 @@ def format_watchlist(rows: list[dict]) -> str:
 
     lines = [
         "📌 Rổ lọc doanh nghiệp",
-        f"Cập nhật theo báo cáo gần nhất · ngày công bố ước tính: {_fmt_day_vi(as_of)}",
-        "(Đây không phải ngày giao dịch phiên — tín hiệu phiên xem /signals.)",
+        f"Theo BCTC năm (ước tính ngày công bố): {_fmt_day_vi(as_of)}",
+        "(Không phải quý lịch · không phải ngày giao dịch phiên — tín hiệu xem /signals.)",
         "",
     ]
     if pass_rows:
@@ -551,19 +675,51 @@ def format_regime_message(p_bull: float | None, as_of: str | None = None) -> str
     return f"{header}\n\n{body}\n\n{DISCLAIMER}"
 
 
+def format_action_changes_alert(changes: list[dict]) -> str:
+    """Push ngắn khi action đổi (ban_phac §10) — không lặp full report."""
+    if not changes:
+        return ""
+    lines = [
+        "🔔 Đổi trạng thái tín hiệu",
+        f"{len(changes)} mã đổi action so với lần trước:",
+        "",
+    ]
+    for row in changes[:40]:
+        ticker = row.get("ticker", "?")
+        frm = translate_action(row.get("from_action"))
+        to = translate_action(row.get("to_action"))
+        lines.append(
+            f"• {ticker}: {row.get('from_action')} → {row.get('to_action')} "
+            f"({frm} → {to})"
+        )
+    if len(changes) > 40:
+        lines.append(f"… và {len(changes) - 40} mã khác")
+    lines.extend(
+        [
+            "",
+            "Chi tiết: /signals · /check <mã>",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
 def format_signal_message(
     signal_row: dict,
     fundamental_row: dict | None = None,
     ta_indicators: dict | None = None,
     *,
     meta: Mapping[str, Any] | None = None,
+    w_max: float = 0.10,
 ) -> str:
     """Ghép mẫu tin nhắn đầy đủ theo mục 9.7 (+ 4 khối /check) — giọng người dùng."""
     fundamental_row = fundamental_row or {}
     meta = dict(meta or {})
     reason = _reason_payload(signal_row)
     ticker = signal_row.get("ticker", "?")
-    action = str(signal_row.get("action", "WATCH")).upper()
+    view_raw = fundamental_row.get("fundamental_view", "—")
+    action = cap_action_for_fundamental(signal_row.get("action", "WATCH"), view_raw)
     day = signal_row.get("date", "")
 
     p_regime = signal_row.get("p_regime")
@@ -579,10 +735,12 @@ def format_signal_message(
             pass
 
     size = signal_row.get("size")
-    size_pct = f"{float(size) * 100:.1f}%" if size is not None else "—"
+    size_pct = format_size_with_cap(size, w_max=w_max)
     weight = reason.get("portfolio_weight", size)
     weight_pct = (
-        f"{float(weight) * 100:.1f}%" if weight is not None else size_pct
+        format_size_with_cap(weight, w_max=w_max)
+        if weight is not None
+        else size_pct
     )
 
     market = meta.get("market") or ""
@@ -595,15 +753,24 @@ def format_signal_message(
         header_bits.append(f"— {industry}")
     title = " ".join(header_bits)
 
-    view_raw = fundamental_row.get("fundamental_view", "—")
+    watch_capped = (
+        str(view_raw).upper() == "WATCH"
+        and str(signal_row.get("action", "")).upper() == "BUY"
+    )
     lines = [
         f"📌 {title}",
         f"Phiên giao dịch: {_fmt_day_vi(str(day)) if day else '—'}",
         "",
-        _ACTION_BANNER.get(action, f"KHUYẾN NGHỊ: {action}"),
+        _ACTION_BANNER.get(action, f"Tín hiệu hệ thống: {action}"),
         translate_action(action),
-        "",
     ]
+    if watch_capped:
+        lines.append(
+            "(Fundamental đang WATCH — không nâng thành MUA chính thức.)"
+        )
+    if str(view_raw).upper() == "WATCH":
+        lines.append("Quant/Risk chỉ mang tính tham khảo cho mã WATCH.")
+    lines.append("")
 
     gap = _data_gap_note(reason)
     if gap:
@@ -659,7 +826,9 @@ def format_signal_message(
         f"Biến động ngày: {_fmt_pct(signal_row.get('sigma_hat'), 2)}  ·  "
         f"Cắt lỗ gợi ý: {_fmt_num(signal_row.get('stop'))}"
     )
-    lines.append(f"Tỷ trọng gợi ý: khoảng {size_pct} danh mục")
+    lines.append(f"Tỷ trọng gợi ý (GARCH): {size_pct} danh mục")
+    if weight is not None and weight != size:
+        lines.append(f"Tỷ trọng sau tối ưu danh mục (nếu có): {weight_pct}")
     if signal_row.get("p_tp_before_sl") is not None:
         lines.append(
             f"Xác suất chạm mục tiêu trước cắt lỗ: {_fmt_pct(signal_row.get('p_tp_before_sl'), 0)}"
@@ -673,16 +842,432 @@ def format_signal_message(
     if ta_block:
         lines.extend(["", ta_block])
 
+    next_lines = [
+        "",
+        "▶ Tiếp theo:",
+        f"  /chart {ticker} price  ·  /chart {ticker} risk  ·  /signals",
+    ]
+    if str(view_raw).upper() == "PASS":
+        next_lines.append("  /subscribe — nhận báo khi tín hiệu đổi trạng thái")
+    next_lines.extend(["", DISCLAIMER])
+    lines.extend(next_lines)
+    return "\n".join(lines)
+
+
+def _check_header(ticker: str, meta: Mapping[str, Any] | None) -> list[str]:
+    meta = dict(meta or {})
+    bits = [str(ticker).upper()]
+    market = meta.get("market") or ""
+    industry = meta.get("industry") or ""
+    if market:
+        bits.append(f"({market})")
+    if industry and str(industry).upper() not in {"UNKNOWN", "NONE"}:
+        bits.append(f"— {industry}")
+    lines = [f"📌 {' '.join(bits)}"]
+    last_close = meta.get("last_close")
+    if last_close is not None:
+        lines.append(f"Giá gần nhất: {_fmt_num(last_close)}")
+    return lines
+
+
+def _fundamental_pillars_block(fundamental_row: Mapping[str, Any]) -> list[str]:
+    """Khối 4 trụ + lý do phân loại (FAIL/WATCH/PASS)."""
+    lines = [
+        "① Doanh nghiệp",
+        f"Kết luận: {translate_fundamental_view(fundamental_row.get('fundamental_view'))}",
+    ]
+    filed = fundamental_row.get("filed_at") or fundamental_row.get("period")
+    if filed:
+        lines.append(f"Kỳ BCTC / filed_at: {_fmt_day_vi(str(filed))}")
+    payload = _headline_payload(fundamental_row)
+    reason = _classification_reason(fundamental_row)
+    if reason:
+        lines.append(f"Lý do hệ thống: {reason}")
+    pillar_lines, has_value = _pillar_headline_lines(payload)
+    if has_value:
+        lines.extend(pillar_lines)
+    else:
+        lines.append(
+            f"4 trụ (điểm nội bộ): tăng trưởng {_fmt_num(fundamental_row.get('growth_score'))} · "
+            f"chất lượng {_fmt_num(fundamental_row.get('quality_score'))} · "
+            f"an toàn {_fmt_num(fundamental_row.get('safety_score'))} · "
+            f"định giá {_fmt_num(fundamental_row.get('valuation_score'))}"
+        )
+    return lines
+
+
+def format_check_out_of_scope(ticker: str, *, meta: Mapping[str, Any] | None = None) -> str:
+    """OUT_OF_SCOPE — ngoài universe cấu hình; không bảo «đợi sau 15:00»."""
+    t = ticker.strip().upper()
+    lines = _check_header(t, meta)
     lines.extend(
         [
             "",
-            "▶ Tiếp theo:",
-            f"  /chart {ticker} price  ·  /chart {ticker} risk  ·  /signals",
+            "⛔ Ngoài phạm vi chiến lược hiện tại",
+            f"Câu chuyện ngắn: {t} không nằm trong universe cấu hình (CSV Tầng 1).",
+            "Bot không chấm Fundamental/Quant cho mã ngoài phạm vi — "
+            "đây không phải lỗi «chưa chạy daily» và không cần đợi phiên.",
+            "",
+            "Xem mã đang hỗ trợ: /watchlist · /signals",
             "",
             DISCLAIMER,
         ]
     )
     return "\n".join(lines)
+
+
+def format_check_excluded_financial(
+    ticker: str,
+    *,
+    meta: Mapping[str, Any] | None = None,
+    ta_indicators: dict | None = None,
+) -> str:
+    """EXCLUDED_FINANCIAL — V1 loại ngân hàng/chứng khoán/bảo hiểm.
+
+    Vẫn hiện giá/TA tham khảo (ban_phac §6.1) — không đồng nhất với «thiếu data».
+    """
+    t = ticker.strip().upper()
+    industry = (meta or {}).get("industry") or "ngành tài chính"
+    lines = _check_header(t, meta)
+    lines.extend(
+        [
+            "",
+            "⛔ Ngoài phạm vi chiến lược V1 (tài chính)",
+            f"Câu chuyện ngắn: {t} thuộc «{industry}» — bộ lọc V1 đang tắt "
+            "nhóm ngân hàng / chứng khoán / bảo hiểm (exclude_financials).",
+            "Không chạy Quant và không tạo tín hiệu giao dịch cho nhóm này — "
+            "đây là quyết định phạm vi, không phải thiếu BCTC hay lỗi pipeline.",
+            "",
+            "Bạn vẫn có thể xem giá gần nhất (nếu store có) và khối "
+            "«Tham khảo thêm» bên dưới — chỉ để định hướng, không phải khuyến nghị.",
+            "",
+        ]
+    )
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend([ta_block, ""])
+    else:
+        lines.append(
+            "(Chưa có đủ bars để tính TA tham khảo — thử /chart "
+            f"{t} price khi pipeline đã ghi giá.)"
+        )
+        lines.append("")
+    lines.extend(
+        [
+            f"Tiếp: /chart {t} price · /watchlist (mã phi tài chính).",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_check_insufficient(
+    ticker: str,
+    *,
+    fundamental_row: Mapping[str, Any] | None = None,
+    ta_indicators: dict | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> str:
+    """INSUFFICIENT_FUNDAMENTAL — thiếu BCTC ≠ FAIL (ban_phac §6.1)."""
+    t = ticker.strip().upper()
+    lines = _check_header(t, meta)
+    lines.extend(
+        [
+            "",
+            "⚠️ Chưa đủ dữ liệu Fundamental",
+            "Câu chuyện ngắn: thiếu dữ liệu ≠ doanh nghiệp xấu. "
+            "Bot chưa chấm Layer 1 hoàn chỉnh → chưa chạy Quant → "
+            "không có tín hiệu hệ thống.",
+            "",
+        ]
+    )
+    if fundamental_row:
+        reason = _classification_reason(fundamental_row)
+        if reason:
+            lines.append(f"Ghi chú store: {reason}")
+        lines.append(
+            f"Điểm tạm (không dùng để kết luận): "
+            f"G {_fmt_num(fundamental_row.get('growth_score'))} · "
+            f"Q {_fmt_num(fundamental_row.get('quality_score'))} · "
+            f"S {_fmt_num(fundamental_row.get('safety_score'))} · "
+            f"V {_fmt_num(fundamental_row.get('valuation_score'))}"
+        )
+        lines.append("")
+    else:
+        lines.append("Store chưa có hàng fundamental_scores cho mã này.")
+        lines.append("")
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend([ta_block, ""])
+    lines.extend(
+        [
+            f"Tiếp: /chart {t} price · /watchlist",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_check_fundamental_fail(
+    ticker: str,
+    fundamental_row: Mapping[str, Any],
+    *,
+    ta_indicators: dict | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> str:
+    """FUNDAMENTAL_FAIL — vẫn hiện 4 trụ + lý do; không Quant/khuyến nghị."""
+    t = ticker.strip().upper()
+    lines = _check_header(t, meta)
+    lines.extend(
+        [
+            "",
+            "⛔ Không vượt bộ lọc Fundamental",
+            "(Khác với «thiếu dữ liệu» — đã chấm và không đạt ngưỡng chiến lược.)",
+            "",
+        ]
+    )
+    lines.extend(_fundamental_pillars_block(fundamental_row))
+    lines.extend(
+        [
+            "",
+            "Kết luận: không chạy Quant và không tạo tín hiệu giao dịch "
+            "theo chiến lược hiện tại.",
+        ]
+    )
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend(["", ta_block])
+    lines.extend(
+        [
+            "",
+            f"Tiếp: /chart {t} fundamental · /watchlist",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_check_pass_no_signal(
+    ticker: str,
+    fundamental_row: Mapping[str, Any],
+    *,
+    ta_indicators: dict | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> str:
+    """PASS nhưng chưa có hàng signals — nói rõ cần daily_job (không on-demand)."""
+    t = ticker.strip().upper()
+    lines = _check_header(t, meta)
+    lines.extend(
+        [
+            "",
+            "🟡 Fundamental PASS — chưa có tín hiệu Quant trong store",
+            "Bot không chạy Quant on-demand. Cần daily_job ghi signals sau phiên.",
+            "",
+        ]
+    )
+    lines.extend(_fundamental_pillars_block(fundamental_row))
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend(["", ta_block])
+    lines.extend(
+        [
+            "",
+            f"Tiếp: /watchlist · /signals · /chart {t} price",
+            "/subscribe — nhận báo khi tín hiệu đổi trạng thái",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_check_position_aware(
+    position: Mapping[str, Any],
+    signal_row: dict | None,
+    fundamental_row: dict | None = None,
+    *,
+    ta_indicators: dict | None = None,
+    meta: Mapping[str, Any] | None = None,
+) -> str:
+    """Ưu tiên P/L · HOLD/REDUCE/EXIT · stop khi có vị thế OPEN (ban_phac §8)."""
+    ticker = str(position.get("ticker") or (signal_row or {}).get("ticker") or "?").upper()
+    view = (fundamental_row or {}).get("fundamental_view")
+    raw_action = (signal_row or {}).get("action", "WATCH")
+    action = cap_action_for_fundamental(raw_action, view)
+    pos_action = map_position_action(action)
+
+    entry = position.get("entry_price")
+    stop = position.get("stop_price")
+    if signal_row and signal_row.get("stop") is not None:
+        stop = signal_row.get("stop")
+    last_close = (meta or {}).get("last_close")
+    pnl_pct = None
+    if entry is not None and last_close is not None:
+        try:
+            e = float(entry)
+            if e:
+                pnl_pct = float(last_close) / e - 1.0
+        except (TypeError, ValueError):
+            pnl_pct = None
+
+    stop_dist = None
+    if stop is not None and last_close is not None:
+        try:
+            s = float(stop)
+            c = float(last_close)
+            if c:
+                stop_dist = (c - s) / c
+        except (TypeError, ValueError):
+            stop_dist = None
+
+    lines = _check_header(ticker, meta)
+    lines.extend(
+        [
+            "",
+            "📦 ĐANG NẮM GIỮ (vị thế giấy)",
+            _POSITION_ACTION_BANNER.get(pos_action, f"Trạng thái: {pos_action}"),
+            "",
+            "① P/L & vị thế",
+            f"Giá vào: {_fmt_num(entry)}  ·  Giá hiện tại: {_fmt_num(last_close)}",
+            f"P/L ước tính: {_fmt_pct(pnl_pct, 1)}",
+            f"Mở ngày: {_fmt_day_vi(position.get('opened_at'))}  ·  "
+            f"Tỷ trọng: {_fmt_pct(position.get('size_pct_nav'), 1)}",
+            "",
+            "② Risk",
+            f"Stop hiện tại: {_fmt_num(stop)}",
+            (
+                f"Khoảng cách tới stop: {_fmt_pct(stop_dist, 1)}"
+                if stop_dist is not None
+                else "Khoảng cách tới stop: —"
+            ),
+            "",
+            "③ Tín hiệu phiên → hành động vị thế",
+            f"Tín hiệu hệ thống (nghiên cứu): {translate_action(action)}",
+            f"→ Với vị thế đang mở: {pos_action}",
+        ]
+    )
+    if fundamental_row:
+        lines.extend(
+            [
+                "",
+                "④ Fundamental (tóm tắt)",
+                f"{translate_fundamental_view(view)}",
+            ]
+        )
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend(["", ta_block])
+    lines.extend(
+        [
+            "",
+            f"Chi tiết nghiên cứu đầy đủ vẫn dùng cùng /check {ticker} "
+            "(ưu tiên vị thế khi đang OPEN).",
+            "Danh sách: /positions",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def resolve_check_state(
+    *,
+    in_universe: bool | None,
+    is_financial: bool,
+    exclude_financials: bool,
+    fund: Mapping[str, Any] | None,
+    signal: Mapping[str, Any] | None,
+    has_open_position: bool,
+) -> str:
+    """State machine store-only cho /check (ban_phac §5–6)."""
+    if has_open_position:
+        return CHECK_POSITION
+    if in_universe is False:
+        return CHECK_OUT_OF_SCOPE
+    # Tài chính V1 = EXCLUDED dù có/không hàng fund (không nhầm INSUFFICIENT).
+    if exclude_financials and is_financial:
+        return CHECK_EXCLUDED_FINANCIAL
+    if fund is None:
+        return CHECK_INSUFFICIENT
+    if is_insufficient_fundamental(fund):
+        return CHECK_INSUFFICIENT
+    view = str(fund.get("fundamental_view") or "").upper()
+    if view == "FAIL":
+        return CHECK_FAIL
+    if view == "WATCH":
+        return CHECK_WATCH
+    if view == "PASS":
+        return CHECK_PASS if signal else CHECK_PASS_NO_SIGNAL
+    # Có hàng fund nhưng view lạ / trống → thiếu dữ liệu phân loại
+    return CHECK_INSUFFICIENT
+
+
+def format_check_by_state(
+    state: str,
+    ticker: str,
+    *,
+    fund: dict | None = None,
+    signal: dict | None = None,
+    position: dict | None = None,
+    ta_indicators: dict | None = None,
+    meta: Mapping[str, Any] | None = None,
+    w_max: float = 0.10,
+) -> str:
+    """Điều phối formatter theo state — một cửa cho /check."""
+    t = ticker.strip().upper()
+    if state == CHECK_POSITION and position:
+        return format_check_position_aware(
+            position, signal, fund, ta_indicators=ta_indicators, meta=meta
+        )
+    if state == CHECK_OUT_OF_SCOPE:
+        return format_check_out_of_scope(t, meta=meta)
+    if state == CHECK_EXCLUDED_FINANCIAL:
+        return format_check_excluded_financial(
+            t, meta=meta, ta_indicators=ta_indicators
+        )
+    if state == CHECK_INSUFFICIENT:
+        return format_check_insufficient(
+            t, fundamental_row=fund, ta_indicators=ta_indicators, meta=meta
+        )
+    if state == CHECK_FAIL and fund:
+        return format_check_fundamental_fail(
+            t, fund, ta_indicators=ta_indicators, meta=meta
+        )
+    if state == CHECK_PASS_NO_SIGNAL and fund:
+        return format_check_pass_no_signal(
+            t, fund, ta_indicators=ta_indicators, meta=meta
+        )
+    if state in {CHECK_WATCH, CHECK_PASS} and signal:
+        return format_signal_message(
+            signal, fund, ta_indicators=ta_indicators, meta=meta, w_max=w_max
+        )
+    if state == CHECK_WATCH and fund and signal is None:
+        # WATCH chưa có Quant — vẫn hiện Fundamental, không BUY.
+        lines = _check_header(t, meta)
+        lines.extend(
+            [
+                "",
+                "🟡 Tín hiệu hệ thống: THEO DÕI",
+                "Fundamental WATCH — chưa có hàng Quant trong store.",
+                "",
+            ]
+        )
+        lines.extend(_fundamental_pillars_block(fund))
+        ta_block = format_ta_reference_block(ta_indicators or {})
+        if ta_block:
+            lines.extend(["", ta_block])
+        lines.extend(["", DISCLAIMER])
+        return "\n".join(lines)
+    # Fallback an toàn
+    return format_check_unavailable(
+        t,
+        in_watchlist=False,
+        has_fundamental=fund is not None,
+        in_universe_csv=None if state != CHECK_OUT_OF_SCOPE else False,
+    )
 
 
 def format_check_unavailable(
@@ -692,21 +1277,17 @@ def format_check_unavailable(
     has_fundamental: bool = False,
     in_universe_csv: bool | None = None,
 ) -> str:
-    """Giải thích vì sao /check không có tín hiệu phiên — không đổ lỗi vendor mơ hồ."""
+    """Giải thích legacy khi thiếu ngữ cảnh đầy đủ — ưu tiên state machine mới."""
     t = ticker.strip().upper()
+    if in_universe_csv is False:
+        return format_check_out_of_scope(t)
     lines = [
-        f"📭 Chưa có tín hiệu phiên cho {t}.",
+        f"📭 Chưa có đủ dữ liệu store cho {t}.",
         "",
         "Bot chỉ đọc store (không tự crawl khi bạn gõ lệnh).",
-        "Tín hiệu phiên chỉ sinh cho mã đã vào rổ lọc (PASS/WATCH) sau daily_job.",
         "",
     ]
-    if in_universe_csv is False:
-        lines.append(
-            f"• {t} không nằm trong universe cấu hình (vd hose_liquid_35) "
-            "→ Tầng 1/2 không chấm mã này."
-        )
-    elif not has_fundamental and not in_watchlist:
+    if not has_fundamental and not in_watchlist:
         lines.append(
             f"• {t} chưa có điểm cơ bản trong store "
             "(chưa chạy / chưa vào lần lọc quý gần nhất)."
@@ -719,7 +1300,7 @@ def format_check_unavailable(
     elif in_watchlist:
         lines.append(
             f"• {t} đang trong watchlist nhưng chưa có hàng signals "
-            "(cần chạy daily_job / lịch sau 15:00)."
+            "(cần chạy daily_job — không phải Quant on-demand)."
         )
     lines.extend(
         [
@@ -732,23 +1313,47 @@ def format_check_unavailable(
     return "\n".join(lines)
 
 
-def format_positions(rows: list[dict]) -> str:
-    """Bảng text cho /positions."""
+def format_positions(rows: list[dict], *, w_max: float = 0.10) -> str:
+    """Bảng text cho /positions — size = GARCH (giống /signals), có ∑% + trần."""
     if not rows:
         return (
             "📭 Chưa có vị thế giấy đang mở.\n\n"
             "Hệ thống mở vị thế giấy khi phiên có khuyến nghị MUA.\n"
+            "Tỷ trọng mỗi mã = sizing GARCH (không chia đều).\n"
             "Xem gợi ý hôm nay: /signals\n\n"
             + DISCLAIMER
         )
+    total = 0.0
+    n_sized = 0
+    n_at_cap = 0
+    for row in rows:
+        size = row.get("size_pct_nav")
+        if size is None:
+            continue
+        try:
+            s = float(size)
+        except (TypeError, ValueError):
+            continue
+        total += s
+        n_sized += 1
+        if size_hits_w_max(s, w_max):
+            n_at_cap += 1
+
     lines = [
         "📦 Vị thế giấy đang mở",
         f"Số mã: {len(rows)}",
+        f"∑ tỷ trọng ≈ {_fmt_pct(total, 1) if n_sized else '—'}  ·  "
+        f"trần {float(w_max) * 100:.0f}%/mã (GARCH)",
         "",
     ]
+    if n_at_cap:
+        lines.append(
+            f"⚠ {n_at_cap} mã đang chạm trần w_max — không phải lỗi chia đều."
+        )
+        lines.append("")
     for row in rows:
         size = row.get("size_pct_nav")
-        size_txt = _fmt_pct(size, 1) if size is not None else "—"
+        size_txt = format_size_with_cap(size, w_max=w_max)
         lines.extend(
             [
                 f"• {row.get('ticker')}",
@@ -760,7 +1365,7 @@ def format_positions(rows: list[dict]) -> str:
         )
     lines.extend(
         [
-            "Chi tiết: /check <mã>",
+            "Chi tiết: /check <mã>  ·  So sánh gợi ý: /signals",
             "",
             DISCLAIMER,
         ]
@@ -773,8 +1378,10 @@ def format_backtest_results(
     scope: str,
     *,
     available_scopes: list[str] | None = None,
+    checks: list[dict] | None = None,
+    yearly: list[dict] | None = None,
 ) -> str:
-    """Tóm tắt /backtest — báo cáo nghiên cứu đã ghi sẵn."""
+    """Tóm tắt /backtest — báo cáo nghiên cứu OOS đã ghi sẵn (không cam kết lãi)."""
     if not rows:
         lines = [
             f"📭 Chưa có báo cáo kiểm thử cho «{scope}».",
@@ -798,41 +1405,60 @@ def format_backtest_results(
     run_id = rows[0].get("run_id", "?")
     run_at = str(rows[0].get("run_at", ""))[:10]
     baselines = {str(r.get("baseline") or "") for r in rows}
-    n_fw = next(
-        (r.get("n_trades") for r in rows if r.get("baseline") == "framework"),
-        None,
-    )
+    by_base = {str(r.get("baseline") or ""): r for r in rows}
+    fw = by_base.get("framework") or {}
+    b0 = by_base.get("B0_buyhold") or {}
+    n_fw = fw.get("n_trades")
     lines = [
-        "📊 Báo cáo kiểm thử chiến lược (nghiên cứu)",
-        "⚠️ Đây không phải lãi/lỗ tài khoản thật của bạn.",
+        "📊 Báo cáo kiểm thử chiến lược (nghiên cứu ngoài mẫu)",
+        "⚠️ Đây là kết quả nghiên cứu OOS đã ghi sẵn — "
+        "không phải lãi/lỗ tài khoản thật, không cam kết lợi nhuận.",
         f"Phạm vi: {scope} · mã chạy: {run_id} · ghi ngày {_fmt_day_vi(run_at)}",
         "",
         "So sánh hiện có:",
         "• Mua đều & giữ (B0) — chuẩn tối thiểu",
-        "• Theo khung hệ thống — lọc thị trường + xu hướng + rủi ro",
+        "• B1 TA / B2 CANSLIM — baseline song song (nếu có)",
+        "• Theo khung hệ thống — lọc thị trường + xu hướng + rủi ro (OOS)",
         "",
     ]
     if "B1_ta" not in baselines or "B2_canslim" not in baselines:
         lines.append(
-            "Thiếu baseline B1 (TA/EMA-RSI) và B2 (CANSLIM) — "
-            "schema đã dự phòng, ablation chưa tính/ghi song song."
+            "Thiếu baseline B1 (TA/EMA-RSI) và/hoặc B2 (CANSLIM) — "
+            "schema đã dự phòng, ablation chưa tính/ghi đủ."
         )
         lines.append("")
+
+    # Phát hiện hợp lệ: framework thua B0 trên OOS
     try:
-        if n_fw is not None and int(n_fw) < 10:
+        s_fw = float(fw["sharpe"]) if fw.get("sharpe") is not None else None
+        s_b0 = float(b0["sharpe"]) if b0.get("sharpe") is not None else None
+    except (TypeError, ValueError):
+        s_fw, s_b0 = None, None
+    if s_fw is not None and s_b0 is not None and s_fw < s_b0:
+        lines.append(
+            f"📌 Phát hiện hợp lệ: khung hệ thống (Sharpe OOS {_fmt_num(s_fw)}) "
+            f"thua B0 ({_fmt_num(s_b0)}) trên mẫu này — "
+            "giữ trong DECISIONS; không flip MC/BL."
+        )
+        lines.append("")
+
+    try:
+        if n_fw is not None and int(n_fw) < 30:
             lines.append(
-                f"⚠️ Cỡ mẫu ngoài mẫu còn mỏng (số lệnh khung ≈ {int(n_fw)}). "
-                "Sharpe/Calmar chỉ mang tính sơ bộ — chưa đủ để kết luận chắc."
+                f"⚠️ Cỡ mẫu ngoài mẫu còn mỏng (số lệnh khung ≈ {int(n_fw)}; "
+                "ngưỡng ý nghĩa ≥ 30). "
+                "Sharpe/Calmar/Sortino chỉ mang tính minh hoạ."
             )
             lines.append("")
     except (TypeError, ValueError):
         pass
+
     for row in rows:
         base = row.get("baseline", "framework")
         if base == "B0_buyhold":
             title = "① Mua đều & giữ (B0)"
         elif base == "framework":
-            title = "② Theo khung hệ thống (ngoài mẫu)"
+            title = "② Theo khung hệ thống (ngoài mẫu / OOS)"
         elif base == "B1_ta":
             title = "① B1 — TA/EMA-RSI"
         elif base == "B2_canslim":
@@ -851,14 +1477,46 @@ def format_backtest_results(
         lines.append(
             f"Sortino {_fmt_num(row.get('sortino'))} · "
             f"Calmar {_fmt_num(row.get('calmar'))} · "
-            f"phục hồi ~{row.get('max_drawdown_days') if row.get('max_drawdown_days') is not None else '—'} phiên"
+            f"margin {_fmt_num(row.get('margin_bps'))} bps · "
+            f"phục hồi ~"
+            f"{row.get('max_drawdown_days') if row.get('max_drawdown_days') is not None else '—'} phiên"
         )
+        if row.get("turnover") is not None:
+            lines.append(f"Turnover (ước): {_fmt_num(row.get('turnover'), 4)}")
         if row.get("equity_curve_json"):
-            lines.append("Biểu đồ đường vốn: xem ảnh bên dưới (nếu có).")
+            lines.append("Biểu đồ đường vốn: xem ảnh bên dưới (cùng khung OOS).")
         lines.append("")
+
+    if checks:
+        lines.append("── Checks đã đăng ký trước (✅/❌) ──")
+        for chk in checks:
+            mark = "✅" if int(chk.get("passed") or 0) else "❌"
+            name = chk.get("check_name") or "?"
+            actual = chk.get("actual_value")
+            thr = chk.get("threshold")
+            lines.append(
+                f"{mark} {name}: thực tế {_fmt_num(actual)} · "
+                f"ngưỡng {_fmt_num(thr)}"
+            )
+            note = chk.get("note")
+            if note:
+                lines.append(f"   → {note}")
+        lines.append("")
+
+    if yearly:
+        lines.append("── Theo năm (framework OOS) ──")
+        for y in yearly:
+            lines.append(
+                f"• {y.get('year')}: Sharpe {_fmt_num(y.get('sharpe'))} · "
+                f"CAGR {_fmt_pct(y.get('cagr'), 1)} · "
+                f"lệnh {y.get('n_trades', '—')}"
+            )
+        lines.append("")
+
     lines.extend(
         [
-            "Ảnh kèm (khi đủ dữ liệu): đường vốn, sụt giảm, Sharpe trượt.",
+            "Ảnh kèm (khi đủ dữ liệu): đường vốn cùng OOS, sụt giảm, "
+            "Sharpe trượt, IS/OS, yearly, turnover.",
             "Tiếp: /signals · /check <mã> · /chart <mã> price",
             "",
             DISCLAIMER,
@@ -896,9 +1554,9 @@ def format_sector_overview(
     header = f"🏷 Tổng quan theo ngành · {_fmt_day_vi(as_of) if as_of else '—'}"
     lines = [
         header,
-        "Ngày trên = lần lọc báo cáo gần nhất (ước tính ngày công bố),",
-        "không phải ngày giao dịch hôm nay.",
-        "Nếu cách hôm nay quá xa: cần chạy lại pipeline quý (BCTC mới) — không phải lỗi /sector.",
+        "Ngày trên = BCTC năm + lag công bố ước tính (không phải quý lịch),",
+        "cũng không phải ngày giao dịch hôm nay.",
+        "Nếu cách hôm nay quá xa: cần chạy lại pipeline quý (BCTC năm mới) — không phải lỗi /sector.",
         "",
     ]
     for row in rows:
