@@ -177,6 +177,8 @@ def test_formatters_regime_and_check():
     assert "KHUYẾN NGHỊ: MUA" in msg
     assert "① Doanh nghiệp" in msg
     assert "Xếp hạng trong nhóm ngành" in msg
+    # Không có value 6.1 trong fixture → fallback điểm nội bộ
+    assert "Điểm nội bộ" in msg or "tăng trưởng" in msg
     assert "② Thị trường chung" in msg
     assert "③ Xu hướng mã này" in msg
     assert "④ Rủi ro" in msg

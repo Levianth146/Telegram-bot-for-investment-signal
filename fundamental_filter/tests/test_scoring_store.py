@@ -63,6 +63,48 @@ def test_to_store_records_watchlist_excludes_fail():
     assert "headline_json" in records["fundamental_scores"][0]
 
 
+def test_to_store_records_headline_values_from_scoring_frames():
+    results = pd.DataFrame(
+        [
+            {
+                "ticker": "VNM",
+                "year": 2024,
+                "growth_score": 60.0,
+                "quality_score": 60.0,
+                "safety_score": 60.0,
+                "valuation_score": 60.0,
+                "fundamental_score": 60.0,
+                "fundamental_percentile": 70.0,
+                "safety_gate_status": "OK",
+                "classification": "PASS",
+                "classification_reason": "PASS_THRESHOLDS_MET",
+                "classification_flags": "",
+                "classification_as_of_date": "2025-03-31",
+            }
+        ]
+    )
+    frames = {
+        "VNM": pd.DataFrame(
+            [
+                {"ticker": "VNM", "year": 2024, "metric": "eps_cagr_3_year", "raw_value": 0.24},
+                {"ticker": "VNM", "year": 2024, "metric": "roic", "raw_value": 0.15},
+                {"ticker": "VNM", "year": 2024, "metric": "net_debt_to_ebitda", "raw_value": 0.8},
+                {"ticker": "VNM", "year": 2024, "metric": "pe", "raw_value": 18.5},
+            ]
+        )
+    }
+    records = to_store_records(
+        results, as_of_date="2025-03-31", period="2024", scoring_frames=frames
+    )
+    import json
+
+    payload = json.loads(records["fundamental_scores"][0]["headline_json"])
+    assert payload["headline"]["growth"]["value"] == 0.24
+    assert payload["headline"]["quality"]["value"] == 0.15
+    assert payload["headline"]["safety"]["value"] == 0.8
+    assert payload["headline"]["valuation"]["value"] == 18.5
+
+
 def test_aggregate_fundamental_view_single_ticker():
     view = scoring.aggregate_fundamental_view(
         {"score": 70.0},

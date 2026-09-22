@@ -111,6 +111,118 @@ def _buyhold_result(
     }
 
 
+def _rsi(series, period: int = 14):
+    import pandas as pd
+
+    delta = series.diff()
+    gain = delta.clip(lower=0.0).rolling(period, min_periods=period).mean()
+    loss = (-delta.clip(upper=0.0)).rolling(period, min_periods=period).mean()
+    rs = gain / loss.replace(0.0, pd.NA)
+    return 100.0 - (100.0 / (1.0 + rs))
+
+
+def _b1_ta_result(
+    close_by_ticker: Mapping[str, Any],
+    start_date: str,
+    end_date: str,
+    config: dict,
+) -> dict:
+    """Baseline B1 — TA thuần: long khi EMA20>EMA50 và RSI14<70 (mục 10/11.3)."""
+    import pandas as pd
+
+    from backtest.metrics import compute_metrics
+
+    frames = []
+    for ticker, series in close_by_ticker.items():
+        s = pd.to_numeric(series, errors="coerce").dropna()
+        s.index = s.index.astype(str)
+        s = s.loc[(s.index >= start_date) & (s.index <= end_date)]
+        if len(s) < 60:
+            continue
+        ema_fast = s.ewm(span=20, adjust=False).mean()
+        ema_slow = s.ewm(span=50, adjust=False).mean()
+        rsi = _rsi(s, 14)
+        long_mask = (ema_fast > ema_slow) & (rsi < 70)
+        pos = long_mask.astype(float).fillna(0.0)
+        rets = s.pct_change().fillna(0.0) * pos.shift(1).fillna(0.0)
+        frames.append(rets.rename(str(ticker).upper()))
+    if not frames:
+        return {
+            "equity_curve": [],
+            "trades": [],
+            "metrics": compute_metrics([], [], config),
+            "signals": [],
+        }
+    port = pd.concat(frames, axis=1).sort_index().fillna(0.0).mean(axis=1)
+    equity = (1.0 + port).cumprod()
+    curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]
+    # Ước n_trades: số lần bật long trên trung bình mã
+    flips = sum(
+        int((f.fillna(0.0) != 0).astype(int).diff().fillna(0).abs().sum() // 2)
+        for f in frames
+    )
+    metrics = compute_metrics(curve, [], config)
+    metrics = {**metrics, "n_trades": int(flips)}
+    return {"equity_curve": curve, "trades": [], "metrics": metrics, "signals": []}
+
+
+def _b2_canslim_result(
+    close_by_ticker: Mapping[str, Any],
+    start_date: str,
+    end_date: str,
+    config: dict,
+) -> dict:
+    """Baseline B2 — CANSLIM rút gọn: mỗi tháng giữ nửa mã RS 6 tháng cao nhất."""
+    import pandas as pd
+
+    from backtest.metrics import compute_metrics
+
+    frames = []
+    for ticker, series in close_by_ticker.items():
+        s = pd.to_numeric(series, errors="coerce").dropna()
+        s.index = s.index.astype(str)
+        s = s.loc[(s.index >= start_date) & (s.index <= end_date)]
+        if not s.empty:
+            frames.append(s.rename(str(ticker).upper()))
+    if not frames:
+        return {
+            "equity_curve": [],
+            "trades": [],
+            "metrics": compute_metrics([], [], config),
+            "signals": [],
+        }
+    prices = pd.concat(frames, axis=1).sort_index().ffill()
+    # RS ~ return 126 phiên (~6 tháng giao dịch)
+    rs = prices / prices.shift(126) - 1.0
+    month_ends = list(prices.groupby(prices.index.str[:7]).tail(1).index)
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    n_trades = 0
+    prev_set: set[str] = set()
+    for i, day in enumerate(month_ends):
+        row = rs.loc[day].dropna()
+        if row.empty:
+            continue
+        k = max(1, len(row) // 2)
+        chosen = set(str(x) for x in row.nlargest(k).index)
+        w = 1.0 / len(chosen)
+        next_day = month_ends[i + 1] if i + 1 < len(month_ends) else prices.index[-1]
+        slice_idx = prices.index[(prices.index >= day) & (prices.index <= next_day)]
+        weights.loc[slice_idx, :] = 0.0
+        for col in chosen:
+            if col in weights.columns:
+                weights.loc[slice_idx, col] = w
+        if chosen != prev_set:
+            n_trades += len(chosen.symmetric_difference(prev_set))
+            prev_set = chosen
+    rets = prices.pct_change().fillna(0.0)
+    port = (rets * weights.shift(1).fillna(0.0)).sum(axis=1)
+    equity = (1.0 + port).cumprod()
+    curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]
+    metrics = compute_metrics(curve, [], config)
+    metrics = {**metrics, "n_trades": int(n_trades)}
+    return {"equity_curve": curve, "trades": [], "metrics": metrics, "signals": []}
+
+
 def _assumed_lag_days(config: Mapping[str, Any] | None) -> int:
     sources = dict((config or {}).get("data_sources") or {})
     backtest = dict(sources.get("financial_statements_backtest") or {})
@@ -265,6 +377,27 @@ def run_ablation(
             }
         )
 
+    # Baseline song song B1/B2 (mục 10/11.3) — không nằm trong stack keep/cut.
+    for label, runner in (
+        ("B1_ta", _b1_ta_result),
+        ("B2_canslim", _b2_canslim_result),
+    ):
+        print(f"ablation step: {label} ...", flush=True)
+        result = runner(signal_closes, start_date, end_date, config)
+        m = result["metrics"]
+        steps.append(
+            {
+                "layer": label,
+                "cagr": m.get("cagr"),
+                "sharpe": m.get("sharpe"),
+                "max_drawdown": m.get("max_drawdown"),
+                "win_rate": m.get("win_rate"),
+                "n_trades": m.get("n_trades"),
+                "metrics": m,
+                "equity_curve": list(result.get("equity_curve") or []),
+            }
+        )
+
     return {"layers_order": order, "steps": steps}
 
 
@@ -298,6 +431,11 @@ def decide_keep_cut(
         if row.get("layer") == "B0_buyhold":
             row["delta_sharpe"] = None
             row["decision"] = "baseline"
+        elif row.get("layer") in {"B1_ta", "B2_canslim"}:
+            row["delta_sharpe"] = None
+            row["decision"] = "baseline (parallel)"
+            annotated.append(row)
+            continue
         elif sharpe_f is None:
             row["delta_sharpe"] = None
             row["decision"] = "pending — missing Sharpe (0 trades / flat)"
@@ -455,8 +593,8 @@ def ablation_payload_to_store_rows(
 ) -> list[dict]:
     """Map ablation JSON → rows cho ``store.backtest_results``.
 
-    Chỉ ghi baseline hợp lệ schema: B0_buyhold + framework (walk-forward hoặc
-    bước stack cuối có số liệu). Các tầng ablation trung gian giữ trong JSON.
+    Ghi baseline: B0_buyhold, B1_ta, B2_canslim + framework (walk-forward hoặc
+    bước stack cuối). Các tầng ablation trung gian giữ trong JSON.
     """
     from datetime import datetime, timezone
 
@@ -467,16 +605,18 @@ def ablation_payload_to_store_rows(
     steps = list(payload.get("steps") or [])
     by_layer = {str(s.get("layer")): s for s in steps if isinstance(s, dict)}
 
-    b0 = by_layer.get("B0_buyhold")
-    if b0:
+    for layer_key in ("B0_buyhold", "B1_ta", "B2_canslim"):
+        step = by_layer.get(layer_key)
+        if not step:
+            continue
         rows.append(
             {
                 "run_id": rid,
                 "run_at": rat,
                 "scope": scope,
-                "baseline": "B0_buyhold",
-                **_metrics_from_step(b0),
-                "equity_curve_json": _equity_curve_json(b0),
+                "baseline": layer_key,
+                **_metrics_from_step(step),
+                "equity_curve_json": _equity_curve_json(step),
             }
         )
 

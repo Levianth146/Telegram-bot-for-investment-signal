@@ -74,7 +74,12 @@ def run(
         scoring_frames, start_year, end_year
     )
     filed = assumed_filed_at(end_year, _assumed_lag_days(config))
-    records = to_store_records(results, filed_at=filed, as_of_date=filed)
+    records = to_store_records(
+        results,
+        filed_at=filed,
+        as_of_date=filed,
+        scoring_frames=scoring_frames,
+    )
 
     if persist:
         conn = repository.get_connection(db_path)

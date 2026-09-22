@@ -363,6 +363,22 @@ def test_ablation_persist_to_store(tmp_path):
                 "equity_curve": curve_b0,
             },
             {
+                "layer": "B1_ta",
+                "cagr": 0.05,
+                "sharpe": 0.4,
+                "max_drawdown": -0.2,
+                "n_trades": 12,
+                "equity_curve": curve_b0,
+            },
+            {
+                "layer": "B2_canslim",
+                "cagr": 0.07,
+                "sharpe": 0.5,
+                "max_drawdown": -0.22,
+                "n_trades": 8,
+                "equity_curve": curve_b0,
+            },
+            {
                 "layer": "risk",
                 "cagr": -0.02,
                 "sharpe": -0.9,
@@ -382,11 +398,12 @@ def test_ablation_persist_to_store(tmp_path):
     out = persist_ablation_to_store(
         payload, db_path=str(db), run_id="ablation_test", scope="portfolio"
     )
-    assert out["rows"] == 2
+    assert out["rows"] == 4
     conn = repository.get_connection(str(db))
     rows = {r["baseline"]: r for r in repository.get_backtest_results(conn, "portfolio")}
     conn.close()
     assert "B0_buyhold" in rows and "framework" in rows
+    assert "B1_ta" in rows and "B2_canslim" in rows
     assert json.loads(rows["B0_buyhold"]["equity_curve_json"])[0]["equity"] == 1.0
     assert json.loads(rows["framework"]["equity_curve_json"])[-1]["equity"] == 1.03
     assert abs(float(rows["framework"]["sharpe"]) - 0.8) < 1e-9
@@ -395,3 +412,28 @@ def test_ablation_persist_to_store(tmp_path):
 def test_sharpe_unit():
     rets = pd.Series([0.01, -0.005, 0.008, 0.002])
     assert sharpe_ratio(rets) != 0
+
+
+def test_b1_b2_baseline_runners_finite():
+    import numpy as np
+
+    from backtest.ablation import _b1_ta_result, _b2_canslim_result
+
+    rng = np.random.default_rng(0)
+    dates = pd.bdate_range("2022-01-01", periods=300).astype(str)
+    closes = {
+        "AAA": pd.Series(
+            50 * np.exp(np.cumsum(rng.normal(0.0005, 0.02, 300))), index=dates
+        ),
+        "BBB": pd.Series(
+            40 * np.exp(np.cumsum(rng.normal(0.0003, 0.018, 300))), index=dates
+        ),
+        "CCC": pd.Series(
+            30 * np.exp(np.cumsum(rng.normal(0.0004, 0.022, 300))), index=dates
+        ),
+    }
+    cfg = {"quant_engine": {"sigma_target": 0.02}}
+    b1 = _b1_ta_result(closes, "2022-01-01", "2023-12-31", cfg)
+    b2 = _b2_canslim_result(closes, "2022-01-01", "2023-12-31", cfg)
+    assert len(b1["equity_curve"]) > 50
+    assert len(b2["equity_curve"]) > 50

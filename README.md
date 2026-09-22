@@ -49,11 +49,18 @@ python -m bot.main                   # Khởi động bot (chỉ đọc store/)
 
 ## Chạy live (ops)
 
-1. `cp .env.example .env` rồi điền `BOT_TOKEN` (không commit `.env`).
-2. Universe/watchlist: `python -m pipeline.quarterly_job` (hoặc đã có dữ liệu trong `store/`).
-3. Một lần pipeline + push: `python scripts/run_daily_pipeline.py` (thêm `--with-sector` nếu cần refresh ngành).
-4. Bot polling: `python -m bot.main` (không `--dry-run`). Trong Telegram: `/start` → `/subscribe` → `/signals`.
-5. Chạy lại `run_daily_pipeline` sau khi subscribe để nhận push.
+Bot **không** tự crawl khi bạn gõ lệnh — chỉ đọc `store/`. Automation = job theo lịch.
+
+Checklist nhanh:
+
+1. `.env`: `BOT_TOKEN`, `DATABASE_PATH=store/bot.db` (không commit `.env`).
+2. **Tầng 1 (khi có BCTC mới):**  
+   `python -m pipeline.quarterly_job --start-year 2021 --end-year 2025`  
+   (universe từ `pipeline/config.yaml` → `hose_liquid_35`).
+3. **Tầng 2 (mỗi phiên sau đóng cửa):**  
+   `python scripts/run_daily_pipeline.py` (thêm `--with-sector` nếu cần ngành; `--backfill-days N` để tích signals từ `price_bars`).
+4. **Bot polling (1 process):** `python -m bot.main` — `/start` → `/subscribe` → `/signals`.
+5. Chạy lại daily sau khi subscribe nếu muốn nhận push ngay.
 
 ### Lịch Windows (sau đóng cửa)
 
@@ -71,7 +78,7 @@ schtasks /Run /TN "VNSignalDaily"
 
 Task ghi `signals` + `price_bars` mỗi phiên; `/chart <mã> price` chỉ cần bot đang polling cùng `DATABASE_PATH`.
 
-Bot polling (`python -m bot.main`) chạy riêng nếu muốn nhận tin ngay khi daily xong.
+Bot polling (`python -m bot.main`) chạy riêng nếu muốn nhận tin ngay khi daily xong. Không chạy polling trên hai máy cùng một `BOT_TOKEN`.
 
 ## Backtest
 

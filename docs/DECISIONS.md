@@ -192,3 +192,12 @@ MC/BL defaults vẫn `enabled: false` trong `pipeline/config.yaml`.
 | `/check VCB` trống | **Không phải DNSE thiếu VCB trước.** VCB **không có** trong `hose_liquid_35` → không vào universe → không Tầng 1 → không watchlist → `daily_job` không sinh signal. Bot **không** crawl khi gõ lệnh (ARCHITECTURE: chỉ đọc store). Automation = quarterly + daily theo lịch. | `/check` giải thích rõ ngoài universe / FAIL / chưa daily. |
 | `/sector` 31/03/2025 | **PIT as_of** = `assumed_filed_at(FY2024, lag≈90d)` từ lần `quarterly_job` đã chạy — đúng công thức, **cũ** vì chưa chạy lại với BCTC 2025+. | Hỏi data: re-run quarterly với period mới; không nhầm là bug ngày session. |
 | `/backtest` thiếu B1/B2 + n=3 | Schema có `B1_ta`/`B2_canslim` nhưng ablation **chỉ persist B0 + framework**. `ablation_watchlist12_wf` n_trades=3 → sơ bộ, chưa đủ kết luận mục 11.3. | Copy cảnh báo mẫu mỏng + thiếu B1/B2; backtest team implement 2 baseline. |
+
+### Sprint next-framework (2026-09-22)
+
+- **Mục 6.1:** `store_adapter._headline_json` persist giá trị (EPS CAGR / ROIC / Net Debt/EBITDA / P/E) + supporting khi bất thường; `quarterly_job` truyền `scoring_frames`; `/check` ưu tiên metric thật.
+- **Tier1 refresh:** `quarterly_job --tickers` 8 mã liquid (VNM/FPT/…) `2021–2025` → `filed_at`/`as_of` **2026-03-31** (FY2025+lag). Full 35 mã live fetch quá chậm/HF — chạy nốt theo đợt.
+- **Daily:** 24 signals phiên `2026-09-22` + backfill 10 phiên; MC/BL vẫn off.
+- **Ops:** `VNSignalDaily` schtasks Ready (T2–T6 15:15); README checklist rõ bot không crawl on-command.
+- **Ablation B1/B2:** `_b1_ta_result` (EMA20/50+RSI) + `_b2_canslim_result` (RS 6M top-half tháng) persist vào `backtest_results`.
+- **OOS denser (smoke):** `ablation_b012_smoke` 6 mã 2023–2026 `signal_every=42` no-fund: B0 Sharpe≈0.43; B1 n_trades=257 Sharpe≈0.55; B2 n=57; framework stack risk n=14 Sharpe≈−0.50. Full WF+fund 12 mã quá chậm (scoring_schedule) — không flip MC/BL (gate chưa đạt; framework vẫn mỏng / thua B0 trên sample này).

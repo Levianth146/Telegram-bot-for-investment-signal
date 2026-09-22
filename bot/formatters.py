@@ -21,12 +21,26 @@ HEADLINE_METRICS = {
     "valuation": "pe_vs_history_and_peer",
 }
 
-# Giải thích tiếng người dùng cho /check (mục 9.7).
+# Giải thích tiếng người dùng cho /check (mục 9.7 / 6.1).
 HEADLINE_VI = {
     "growth": "tăng trưởng lợi nhuận vài năm gần đây",
     "quality": "hiệu quả dùng vốn",
     "safety": "nợ so với khả năng sinh tiền",
     "valuation": "giá so với lịch sử và cùng ngành",
+}
+
+HEADLINE_METRIC_VI = {
+    "eps_cagr_3y": "EPS CAGR 3 năm",
+    "eps_cagr_3_year": "EPS CAGR 3 năm",
+    "roic": "ROIC",
+    "net_debt_to_ebitda": "Nợ ròng / EBITDA",
+    "pe_vs_history_and_peer": "P/E",
+    "pe": "P/E",
+    "revenue_cagr_3y": "Doanh thu CAGR 3 năm",
+    "revenue_cagr_3_year": "Doanh thu CAGR 3 năm",
+    "roe": "ROE",
+    "interest_coverage": "Khả năng trả lãi",
+    "pb": "P/B",
 }
 
 DISCLAIMER = (
@@ -236,6 +250,65 @@ def _headline_payload(fundamental_row: Mapping[str, Any]) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _fmt_metric_value(metric_id: str, value: Any) -> str:
+    """Định dạng giá trị headline/supporting cho tin nhắn."""
+    try:
+        num = float(value)
+    except (TypeError, ValueError):
+        return "—"
+    mid = str(metric_id or "").lower()
+    if mid in {
+        "eps_cagr_3y",
+        "eps_cagr_3_year",
+        "roic",
+        "roe",
+        "revenue_cagr_3y",
+        "revenue_cagr_3_year",
+        "fcf_yield",
+    }:
+        return f"{num * 100:.1f}%" if abs(num) <= 5 else f"{num:.2f}"
+    if mid in {"pe", "pe_vs_history_and_peer", "pb", "net_debt_to_ebitda", "interest_coverage"}:
+        return f"{num:.2f}"
+    return _fmt_num(num)
+
+
+def _pillar_headline_lines(payload: Mapping[str, Any]) -> tuple[list[str], bool]:
+    """Trả (dòng headline 6.1, có_ít_nhất_một_value)."""
+    raw_h = payload.get("headline")
+    lines: list[str] = []
+    has_value = False
+    if not isinstance(raw_h, dict):
+        return lines, False
+    order = ("growth", "quality", "safety", "valuation")
+    for pillar in order:
+        cell = raw_h.get(pillar)
+        if not isinstance(cell, dict):
+            # dạng cũ: chỉ tên metric string
+            if isinstance(cell, str) and cell:
+                lines.append(f"• {HEADLINE_VI.get(pillar, pillar)}: (chưa có số)")
+            continue
+        mid = str(cell.get("metric") or cell.get("raw_metric") or "")
+        label = HEADLINE_METRIC_VI.get(mid) or HEADLINE_VI.get(pillar, pillar)
+        val = cell.get("value")
+        if val is None:
+            lines.append(f"• {label}: chưa có số")
+            continue
+        has_value = True
+        lines.append(f"• {label}: {_fmt_metric_value(mid, val)}")
+    supporting = payload.get("supporting")
+    if isinstance(supporting, dict) and supporting:
+        for pillar, cell in supporting.items():
+            if not isinstance(cell, dict):
+                continue
+            mid = str(cell.get("metric") or cell.get("raw_metric") or "")
+            label = HEADLINE_METRIC_VI.get(mid) or mid
+            val = cell.get("value")
+            if val is None:
+                continue
+            lines.append(f"• (bổ sung) {label}: {_fmt_metric_value(mid, val)}")
+    return lines, has_value
+
+
 def _headline_block_lines(fundamental_row: Mapping[str, Any]) -> list[str]:
     """Vài dòng nhẹ từ headline_json — không dump toàn bộ supporting metrics."""
     payload = _headline_payload(fundamental_row)
@@ -247,28 +320,20 @@ def _headline_block_lines(fundamental_row: Mapping[str, Any]) -> list[str]:
                 f"{HEADLINE_VI['safety']}; {HEADLINE_VI['valuation']}."
             )
         ]
-    lines = [
-        (
-            "Nhìn chủ yếu vào: "
-            f"{HEADLINE_VI['growth']}; {HEADLINE_VI['quality']}; "
-            f"{HEADLINE_VI['safety']}; {HEADLINE_VI['valuation']}."
-        )
-    ]
+    pillar_lines, has_value = _pillar_headline_lines(payload)
+    if has_value and pillar_lines:
+        lines = list(pillar_lines)
+    else:
+        lines = [
+            (
+                "Nhìn chủ yếu vào: "
+                f"{HEADLINE_VI['growth']}; {HEADLINE_VI['quality']}; "
+                f"{HEADLINE_VI['safety']}; {HEADLINE_VI['valuation']}."
+            )
+        ]
     gate = payload.get("safety_gate_status")
     if gate and str(gate).upper() not in {"OK", "PASS", "NONE", ""}:
         lines.append(f"Cổng an toàn: {gate}")
-    reason = payload.get("classification_reason") or payload.get("flags")
-    if reason:
-        txt = str(reason).strip()
-        if len(txt) > 160:
-            txt = txt[:157] + "…"
-        lines.append(f"Ghi chú lọc: {txt}")
-    pct = payload.get("fundamental_percentile")
-    if pct is not None:
-        try:
-            lines.append(f"Phân vị cơ bản trong nhóm: {_fmt_num(pct, 0)}")
-        except (TypeError, ValueError):
-            pass
     return lines
 
 
@@ -550,9 +615,7 @@ def format_signal_message(
             f"Kết luận: {translate_fundamental_view(view_raw)}",
         ]
     )
-    # Mục 6.1: 1 headline metric thật / trụ + supporting khi bất thường.
-    # Store hiện chỉ có điểm 0–100 + tên metric trong headline_json (chưa có giá trị
-    # kiểu EPS CAGR %) → tạm hiện điểm nội bộ, ghi rõ là bản rút gọn.
+    # Mục 6.1: ưu tiên headline metric thật; điểm 0–100 chỉ fallback.
     payload = _headline_payload(fundamental_row)
     pct = payload.get("fundamental_percentile")
     if pct is not None:
@@ -560,16 +623,19 @@ def format_signal_message(
             lines.append(f"Xếp hạng trong nhóm ngành: khoảng {_fmt_num(pct, 0)}/100")
         except (TypeError, ValueError):
             pass
-    lines.append(
-        f"Điểm nội bộ (tạm): tăng trưởng {_fmt_num(fundamental_row.get('growth_score'))} · "
-        f"chất lượng {_fmt_num(fundamental_row.get('quality_score'))} · "
-        f"an toàn {_fmt_num(fundamental_row.get('safety_score'))} · "
-        f"định giá {_fmt_num(fundamental_row.get('valuation_score'))}"
-    )
-    lines.append(
-        "Ghi chú: chưa hiện chỉ số gốc mục 6.1 (vd EPS CAGR / ROIC) — "
-        "đang dùng điểm tổng hợp thay thế."
-    )
+    pillar_lines, has_value = _pillar_headline_lines(payload)
+    if has_value:
+        lines.extend(pillar_lines)
+    else:
+        lines.append(
+            f"Điểm nội bộ (tạm): tăng trưởng {_fmt_num(fundamental_row.get('growth_score'))} · "
+            f"chất lượng {_fmt_num(fundamental_row.get('quality_score'))} · "
+            f"an toàn {_fmt_num(fundamental_row.get('safety_score'))} · "
+            f"định giá {_fmt_num(fundamental_row.get('valuation_score'))}"
+        )
+        lines.append(
+            "Ghi chú: chưa có chỉ số gốc mục 6.1 trong store — chạy lại lọc quý để cập nhật."
+        )
 
     lines.extend(
         [
