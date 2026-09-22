@@ -148,3 +148,28 @@ equity curve so baseline, drawdown (underwater) chart, rolling Sharpe, histogram
 từng lệnh đã đóng (đối chiếu với chart Monte Carlo — 1 cái là dự báo trước khi vào lệnh,
 1 cái là kết quả thực sau khi đóng lệnh), và equity curve tách theo regime (P1, kiểm định
 trực tiếp giá trị của lớp Regime).
+
+### Phong cách WQ Brain cho `/backtest` (mới)
+
+Lấy cảm hứng từ cách trình bày kết quả simulation của nền tảng WQ Brain — không chỉ
+đưa 1 con số cho cả giai đoạn, mà tách theo năm và đối chiếu ngưỡng đã đăng ký trước:
+
+- **`margin_bps`** (mới trong `backtest_results`): return / turnover, đo "chất lượng
+  mỗi lượt giao dịch" tách biệt khỏi mức turnover cao/thấp.
+- **`backtest_yearly_breakdown`**: Sharpe/CAGR/MaxDD/Turnover/Margin/số lệnh theo
+  từng năm — trực quan hoá qua `render_yearly_stats_chart`, giúp thấy chiến lược ổn
+  định qua thời gian hay chỉ tốt nhờ 1-2 năm.
+- **`backtest_checks`**: bảng PASS/FAIL đối chiếu với ngưỡng đăng ký trước trong
+  `docs/DECISIONS.md` (`pipeline/config.yaml: backtest.checks`) — vd
+  `MIN_TRADES_FOR_SIGNIFICANCE`, `MIN_SHARPE_IMPROVEMENT_OOS`, `MAX_TURNOVER_PCT`.
+  Bot hiện bảng này dưới dạng ✅/❌ trong `/backtest`, để không ai (kể cả chính nhóm)
+  diễn giải số liệu theo hướng có lợi sau khi đã thấy kết quả.
+- **`render_pnl_is_os_chart`**: equity curve tô 2 màu in-sample/out-of-sample theo
+  đúng ranh giới `backtest.walk_forward` đã cấu hình.
+- **`render_turnover_chart`**: turnover trượt theo thời gian, không gộp thành 1 số
+  trung bình duy nhất.
+
+Không mang theo phần "correlation với alpha khác" của WQ Brain (không áp dụng — chỉ
+có 1 framework để so, không phải hàng nghìn alpha), và không dùng "Long/Short Count"
+theo nghĩa short-selling (thị trường VN retail không short được) — giữ nguyên khái
+niệm "số mã BUY/WATCH/SELL mỗi phiên" đã có ở `/signals`.

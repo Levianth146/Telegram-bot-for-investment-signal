@@ -1,0 +1,373 @@
+{
+  "communities": {
+    "0": [
+      "fundamental_filter",
+      "fundamental_filter_growth",
+      "fundamental_filter_growth_eps_cagr",
+      "fundamental_filter_growth_growth_score",
+      "fundamental_filter_growth_growth_spread",
+      "fundamental_filter_growth_positive_growth_ratio",
+      "fundamental_filter_growth_rationale_1",
+      "fundamental_filter_growth_rationale_15",
+      "fundamental_filter_growth_rationale_21",
+      "fundamental_filter_growth_rationale_26",
+      "fundamental_filter_growth_rationale_31",
+      "fundamental_filter_growth_rationale_36",
+      "fundamental_filter_growth_revenue_growth_yoy",
+      "fundamental_filter_tests_test_growth",
+      "fundamental_filter_tests_test_growth_rationale_1",
+      "fundamental_filter_tests_test_growth_test_revenue_growth_yoy_not_implemented_yet",
+      "pytest"
+    ],
+    "1": [
+      "argparse",
+      "backtest_walk_forward",
+      "backtest_walk_forward_main",
+      "backtest_walk_forward_rationale_1",
+      "backtest_walk_forward_rationale_12",
+      "backtest_walk_forward_walk_forward_windows",
+      "pipeline_daily_job",
+      "pipeline_daily_job_main",
+      "pipeline_daily_job_rationale_1",
+      "pipeline_daily_job_run",
+      "pipeline_quarterly_job",
+      "pipeline_quarterly_job_main",
+      "pipeline_quarterly_job_rationale_1",
+      "pipeline_quarterly_job_run"
+    ],
+    "2": [
+      "connection",
+      "pathlib",
+      "sqlite3",
+      "store_repository",
+      "store_repository_get_connection",
+      "store_repository_get_latest_signals",
+      "store_repository_get_watchlist",
+      "store_repository_init_schema",
+      "store_repository_rationale_1",
+      "store_repository_rationale_23",
+      "store_repository_rationale_28",
+      "store_repository_upsert_signal"
+    ],
+    "3": [
+      "bot_formatters",
+      "bot_formatters_format_signal_message",
+      "bot_formatters_format_ta_reference_block",
+      "bot_formatters_rationale_1",
+      "bot_formatters_rationale_29",
+      "bot_formatters_rationale_38",
+      "bot_formatters_rationale_48",
+      "bot_formatters_rationale_61",
+      "bot_formatters_translate_kalman_trend",
+      "bot_formatters_translate_regime"
+    ],
+    "4": [
+      "fundamental_filter_quality",
+      "fundamental_filter_quality_cash_conversion",
+      "fundamental_filter_quality_dupont_decomposition",
+      "fundamental_filter_quality_quality_score",
+      "fundamental_filter_quality_rationale_1",
+      "fundamental_filter_quality_rationale_11",
+      "fundamental_filter_quality_rationale_16",
+      "fundamental_filter_quality_rationale_25",
+      "fundamental_filter_quality_rationale_30",
+      "fundamental_filter_quality_roic"
+    ],
+    "5": [
+      "fundamental_filter_safety",
+      "fundamental_filter_safety_interest_coverage",
+      "fundamental_filter_safety_merton_distance_to_default",
+      "fundamental_filter_safety_net_debt_to_ebitda",
+      "fundamental_filter_safety_rationale_1",
+      "fundamental_filter_safety_rationale_12",
+      "fundamental_filter_safety_rationale_17",
+      "fundamental_filter_safety_rationale_28",
+      "fundamental_filter_safety_rationale_38",
+      "fundamental_filter_safety_safety_score"
+    ],
+    "6": [
+      "quant_engine",
+      "quant_engine_regime",
+      "quant_engine_regime_filtered_regime_probability",
+      "quant_engine_regime_fit_markov_regime",
+      "quant_engine_regime_rationale_1",
+      "quant_engine_regime_rationale_15",
+      "quant_engine_regime_rationale_23",
+      "quant_engine_tests_test_regime",
+      "quant_engine_tests_test_regime_rationale_1",
+      "quant_engine_tests_test_regime_test_filtered_regime_probability_not_implemented_yet"
+    ],
+    "7": [
+      "quant_engine_risk_garch",
+      "quant_engine_risk_garch_fit_gjr_garch",
+      "quant_engine_risk_garch_forecast_sigma",
+      "quant_engine_risk_garch_position_size",
+      "quant_engine_risk_garch_rationale_1",
+      "quant_engine_risk_garch_rationale_14",
+      "quant_engine_risk_garch_rationale_19",
+      "quant_engine_risk_garch_rationale_24",
+      "quant_engine_risk_garch_rationale_29",
+      "quant_engine_risk_garch_stop_loss_price"
+    ],
+    "8": [
+      "fundamental_filter_valuation",
+      "fundamental_filter_valuation_margin_of_safety",
+      "fundamental_filter_valuation_pe_ratio",
+      "fundamental_filter_valuation_rationale_1",
+      "fundamental_filter_valuation_rationale_12",
+      "fundamental_filter_valuation_rationale_17",
+      "fundamental_filter_valuation_rationale_26",
+      "fundamental_filter_valuation_valuation_score"
+    ],
+    "9": [
+      "quant_engine_portfolio_black_litterman",
+      "quant_engine_portfolio_black_litterman_black_litterman_weights",
+      "quant_engine_portfolio_black_litterman_build_views",
+      "quant_engine_portfolio_black_litterman_equal_weight_fallback",
+      "quant_engine_portfolio_black_litterman_rationale_1",
+      "quant_engine_portfolio_black_litterman_rationale_15",
+      "quant_engine_portfolio_black_litterman_rationale_24",
+      "quant_engine_portfolio_black_litterman_rationale_29"
+    ],
+    "10": [
+      "quant_engine_probabilistic_monte_carlo",
+      "quant_engine_probabilistic_monte_carlo_cvar",
+      "quant_engine_probabilistic_monte_carlo_probability_tp_before_sl",
+      "quant_engine_probabilistic_monte_carlo_rationale_1",
+      "quant_engine_probabilistic_monte_carlo_rationale_22",
+      "quant_engine_probabilistic_monte_carlo_rationale_27",
+      "quant_engine_probabilistic_monte_carlo_rationale_32",
+      "quant_engine_probabilistic_monte_carlo_simulate_price_paths"
+    ],
+    "11": [
+      "quant_engine_probabilistic_hawkes",
+      "quant_engine_probabilistic_hawkes_branching_ratio",
+      "quant_engine_probabilistic_hawkes_crowding_size_multiplier",
+      "quant_engine_probabilistic_hawkes_fit_hawkes",
+      "quant_engine_probabilistic_hawkes_rationale_1",
+      "quant_engine_probabilistic_hawkes_rationale_18",
+      "quant_engine_probabilistic_hawkes_rationale_28"
+    ],
+    "12": [
+      "fundamental_filter_scoring",
+      "fundamental_filter_scoring_aggregate_fundamental_view",
+      "fundamental_filter_scoring_rationale_1",
+      "fundamental_filter_scoring_rationale_11",
+      "fundamental_filter_scoring_rationale_16",
+      "fundamental_filter_scoring_zscore_by_sector"
+    ],
+    "13": [
+      "quant_engine_alpha_kalman_trend",
+      "quant_engine_alpha_kalman_trend_alpha_effective",
+      "quant_engine_alpha_kalman_trend_fit_kalman_trend",
+      "quant_engine_alpha_kalman_trend_rationale_1",
+      "quant_engine_alpha_kalman_trend_rationale_15",
+      "quant_engine_alpha_kalman_trend_rationale_20"
+    ],
+    "14": [
+      "quant_engine_alpha_ou_meanrev",
+      "quant_engine_alpha_ou_meanrev_fit_ou_process",
+      "quant_engine_alpha_ou_meanrev_ou_half_life",
+      "quant_engine_alpha_ou_meanrev_rationale_1",
+      "quant_engine_alpha_ou_meanrev_rationale_15",
+      "quant_engine_alpha_ou_meanrev_rationale_20"
+    ],
+    "15": [
+      "store_schema",
+      "store_schema_fundamental_scores",
+      "store_schema_idx_signals_ticker",
+      "store_schema_idx_watchlist_date",
+      "store_schema_signals",
+      "store_schema_watchlist"
+    ],
+    "16": [
+      "backtest_costs",
+      "backtest_costs_apply_transaction_costs",
+      "backtest_costs_is_tradable_at_price_limit",
+      "backtest_costs_rationale_1",
+      "backtest_costs_rationale_16"
+    ],
+    "17": [
+      "backtest_ablation",
+      "backtest_ablation_rationale_1",
+      "backtest_ablation_rationale_11",
+      "backtest_ablation_run_ablation"
+    ],
+    "18": [
+      "backtest_engine",
+      "backtest_engine_rationale_1",
+      "backtest_engine_rationale_10",
+      "backtest_engine_run_backtest"
+    ],
+    "19": [
+      "bot_main",
+      "bot_main_main",
+      "bot_main_rationale_1"
+    ],
+    "20": [
+      "tests_test_integration_smoke",
+      "tests_test_integration_smoke_rationale_1",
+      "tests_test_integration_smoke_test_can_import_all_modules"
+    ],
+    "21": [
+      "backtest_init"
+    ],
+    "22": [
+      "bot_handlers_init"
+    ],
+    "23": [
+      "bot_init"
+    ],
+    "24": [
+      "fundamental_filter_init"
+    ],
+    "25": [
+      "pipeline_init"
+    ],
+    "26": [
+      "quant_engine_alpha_init"
+    ],
+    "27": [
+      "quant_engine_init"
+    ],
+    "28": [
+      "quant_engine_portfolio_init"
+    ],
+    "29": [
+      "quant_engine_probabilistic_init"
+    ],
+    "30": [
+      "quant_engine_risk_init"
+    ],
+    "31": [
+      "store_init"
+    ]
+  },
+  "cohesion": {
+    "0": 0.125,
+    "1": 0.14285714285714285,
+    "2": 0.22727272727272727,
+    "3": 0.2,
+    "4": 0.2,
+    "5": 0.2,
+    "6": 0.2222222222222222,
+    "7": 0.2,
+    "8": 0.25,
+    "9": 0.25,
+    "10": 0.25,
+    "11": 0.2857142857142857,
+    "12": 0.3333333333333333,
+    "13": 0.3333333333333333,
+    "14": 0.3333333333333333,
+    "15": 0.4666666666666667,
+    "16": 0.4,
+    "17": 0.5,
+    "18": 0.5,
+    "19": 0.6666666666666666,
+    "20": 0.6666666666666666,
+    "21": 1.0,
+    "22": 1.0,
+    "23": 1.0,
+    "24": 1.0,
+    "25": 1.0,
+    "26": 1.0,
+    "27": 1.0,
+    "28": 1.0,
+    "29": 1.0,
+    "30": 1.0,
+    "31": 1.0
+  },
+  "gods": [
+    {
+      "id": "fundamental_filter_growth_revenue_growth_yoy",
+      "label": "revenue_growth_yoy()",
+      "degree": 3
+    },
+    {
+      "id": "store_repository_get_latest_signals",
+      "label": "get_latest_signals()",
+      "degree": 3
+    },
+    {
+      "id": "store_repository_upsert_signal",
+      "label": "upsert_signal()",
+      "degree": 3
+    },
+    {
+      "id": "quant_engine_regime_filtered_regime_probability",
+      "label": "filtered_regime_probability()",
+      "degree": 3
+    },
+    {
+      "id": "fundamental_filter_growth_eps_cagr",
+      "label": "eps_cagr()",
+      "degree": 2
+    },
+    {
+      "id": "fundamental_filter_growth_growth_score",
+      "label": "growth_score()",
+      "degree": 2
+    },
+    {
+      "id": "fundamental_filter_growth_growth_spread",
+      "label": "growth_spread()",
+      "degree": 2
+    },
+    {
+      "id": "fundamental_filter_growth_positive_growth_ratio",
+      "label": "positive_growth_ratio()",
+      "degree": 2
+    },
+    {
+      "id": "fundamental_filter_tests_test_growth_test_revenue_growth_yoy_not_implemented_yet",
+      "label": "test_revenue_growth_yoy_not_implemented_yet()",
+      "degree": 2
+    },
+    {
+      "id": "backtest_walk_forward_walk_forward_windows",
+      "label": "walk_forward_windows()",
+      "degree": 2
+    }
+  ],
+  "surprises": [
+    {
+      "source": "test_revenue_growth_yoy_not_implemented_yet()",
+      "target": "revenue_growth_yoy()",
+      "source_files": [
+        "fundamental_filter/tests/test_growth.py",
+        "fundamental_filter/growth.py"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "cross-file semantic connection"
+    },
+    {
+      "source": "test_filtered_regime_probability_not_implemented_yet()",
+      "target": "filtered_regime_probability()",
+      "source_files": [
+        "quant_engine/tests/test_regime.py",
+        "quant_engine/regime.py"
+      ],
+      "confidence": "EXTRACTED",
+      "relation": "calls",
+      "why": "cross-file semantic connection"
+    }
+  ],
+  "questions": [
+    {
+      "type": "isolated_nodes",
+      "question": "What connects `fundamental_scores` to the rest of the system?",
+      "why": "1 weakly-connected nodes found - possible documentation gaps or missing edges."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 0` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.125 - nodes in this community are weakly interconnected."
+    },
+    {
+      "type": "low_cohesion",
+      "question": "Should `Community 1` be split into smaller, more focused modules?",
+      "why": "Cohesion score 0.14285714285714285 - nodes in this community are weakly interconnected."
+    }
+  ]
+}

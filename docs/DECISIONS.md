@@ -4,8 +4,17 @@ Nguyên tắc: một tầng chỉ được giữ trong bản cuối nếu nó c�
 (out-of-sample, walk-forward) tối thiểu ngưỡng đã thống nhất. Nếu không đạt, ghi lại đây
 là phát hiện hợp lệ — không xóa khỏi báo cáo.
 
-Ngưỡng thống nhất trước khi chạy ablation lần đầu: **+0.10 Sharpe** (điền lại nếu nhóm chốt
-số khác) — điền ngày chốt: __________
+Ngưỡng thống nhất trước khi chạy ablation lần đầu (đồng bộ với
+`pipeline/config.yaml: backtest.checks` — sửa ở đây thì phải sửa cả bên đó):
+
+- **Cải thiện Sharpe tối thiểu (OOS)**: +0.10
+- **Số lệnh tối thiểu để kết luận có ý nghĩa thống kê**: 30 lệnh — dưới mức này, Sharpe/Calmar/Sortino chỉ mang tính minh hoạ, KHÔNG được dùng để kết luận "framework thắng baseline"
+- **Turnover tối đa**: 200%/năm — vượt mức này cần xem lại vì chi phí giao dịch (`backtest/costs.py`) có thể ăn hết phần alpha đo được
+
+`backtest/ablation.py` đối chiếu 3 ngưỡng trên và ghi PASS/FAIL vào bảng
+`backtest_checks` sau mỗi lần chạy — nhóm xem bảng đó thay vì tự diễn giải số liệu.
+
+Điền ngày chốt các ngưỡng trên: __________
 
 ## Mẫu ghi log
 

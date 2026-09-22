@@ -106,6 +106,16 @@ backtest:
     max_drawdown_days: { enabled: true, tier: P0 }
     cvar95_calibration: { enabled: false, tier: P1 }   # so dự báo CVaR95 (bảng signals) với thực tế
     regime_conditional_sharpe: { enabled: false, tier: P1 }  # sharpe_bull_regime/sharpe_bear_regime
+    margin_bps: { enabled: true, tier: P0 }            # lấy cảm hứng từ WQ Brain: return / turnover
+    yearly_breakdown: { enabled: true, tier: P0 }      # bảng theo năm, ghi vào backtest_yearly_breakdown
+
+  # Ngưỡng đăng ký TRƯỚC khi chạy ablation lần đầu (đồng bộ với docs/DECISIONS.md —
+  # sửa ở đây thì PHẢI sửa cả bên đó, không được đổi ngưỡng sau khi đã thấy kết quả).
+  # backtest/ablation.py đối chiếu các ngưỡng này và ghi PASS/FAIL vào backtest_checks.
+  checks:
+    min_sharpe_improvement_oos: 0.10   # Sharpe framework - Sharpe B0 phải >= mức này (OOS)
+    min_trades_for_significance: 30    # dưới ngưỡng này thì mọi Sharpe/Calmar chỉ mang tính minh hoạ
+    max_turnover_pct: 200              # % NAV/năm — turnover vượt mức này thì chi phí giao dịch có thể ăn hết alpha
 
 sector_classification:
   # Hạ tầng cho scoring z-score "theo ngành" ở mục 10 — xem store/schema.sql:sector_mapping.

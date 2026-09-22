@@ -536,3 +536,25 @@ def render_sector_overview_chart(
     ax.set_title(f"Sector overview | {as_of_date}")
     ax.legend(fontsize=8)
     return _save(fig, out)
+
+
+def render_pnl_is_os_chart(
+    scope: str, run_id: str, split_date: str, out_path: str | Path
+) -> Path:
+    """Equity curve tô 2 màu in-sample / out-of-sample theo ranh giới walk_forward.
+
+    ``split_date`` lấy từ ``pipeline/config.yaml:backtest.walk_forward``, không tự chọn.
+    """
+    raise NotImplementedError
+
+
+def render_yearly_stats_chart(
+    scope: str, baseline: str, run_id: str, out_path: str | Path
+) -> Path:
+    """Bar chart Sharpe/CAGR theo năm từ ``backtest_yearly_breakdown``."""
+    raise NotImplementedError
+
+
+def render_turnover_chart(scope: str, run_id: str, out_path: str | Path) -> Path:
+    """Turnover trượt theo thời gian (không gộp thành 1 số duy nhất)."""
+    raise NotImplementedError

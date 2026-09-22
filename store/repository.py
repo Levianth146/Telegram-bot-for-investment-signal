@@ -635,3 +635,37 @@ def get_price_closes(
             (ticker_u, int(limit_days)),
         )
     return [dict(r) for r in cur.fetchall()]
+
+
+def upsert_yearly_breakdown(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """backtest/ ghi breakdown theo năm sau mỗi lần chạy định kỳ — xem
+    backtest_yearly_breakdown. Mỗi dòng ứng với 1 (run_id, scope, baseline, year)."""
+    raise NotImplementedError
+
+
+def get_yearly_breakdown(
+    conn: sqlite3.Connection,
+    scope: str,
+    baseline: str,
+    run_id: str | None = None,
+) -> list[dict]:
+    """Bot dùng hàm này cho /backtest (bảng theo năm) và bot/charts.py cho yearly bar
+    chart. CHỈ ĐỌC. ``run_id=None`` -> lấy lần chạy mới nhất."""
+    raise NotImplementedError
+
+
+def upsert_backtest_checks(conn: sqlite3.Connection, rows: list[dict]) -> None:
+    """backtest/ablation.py ghi kết quả đối chiếu ngưỡng đã đăng ký trước (xem
+    docs/DECISIONS.md) sau mỗi lần chạy — KHÔNG được tính ngưỡng "linh hoạt" sau khi
+    đã thấy số, ngưỡng phải cố định trước khi chạy."""
+    raise NotImplementedError
+
+
+def get_backtest_checks(
+    conn: sqlite3.Connection,
+    scope: str,
+    baseline: str,
+    run_id: str | None = None,
+) -> list[dict]:
+    """Bot dùng hàm này để hiện bảng PASS/FAIL (✅/❌) trong /backtest. CHỈ ĐỌC."""
+    raise NotImplementedError
