@@ -2,6 +2,14 @@
 
 Cột: B0 buy&hold | B1 TA | B2 CANSLIM | Framework (WF OOS) | VN-Index | VN30.
 
+FAST DEV (kết quả nhanh — KHÔNG dùng làm metrics nghiên cứu cuối):
+  python scripts/run_backtest_report.py --fast-dev --with-fundamentals \\
+      --oos-start 2025-03-22 --oos-end 2025-09-22 --no-walk-forward \\
+      --out-json store/backtest_fast_dev.json --out-xlsx store/backtest_fast_dev.xlsx
+
+  # Fallback 12 mã nếu smoke 35 vẫn chậm fund:
+  #   ... --fast-dev --fast-dev-mini ...
+
 Final VN100 (6m OOS, daily, fundamentals, warmup 3y):
   python scripts/run_backtest_report.py --universe vn100 --with-fundamentals \\
       --signal-every 1 --oos-start 2025-03-22 --oos-end 2025-09-22 --warmup-years 3 \\
@@ -32,6 +40,24 @@ import sys
 from datetime import date
 from pathlib import Path
 from typing import Any, Mapping
+
+# Fallback 12 mã khi --fast-dev-mini (plan A3) — vẫn fundamentals/T+1/costs.
+FAST_DEV_MINI_TICKERS = [
+    "FPT",
+    "VNM",
+    "GAS",
+    "MWG",
+    "REE",
+    "PNJ",
+    "PLX",
+    "GVR",
+    "VHM",
+    "VHC",
+    "DCM",
+    "SAB",
+]
+
+FAST_DEV_BANNER = "FAST DEV MODE — NOT FOR FINAL RESEARCH METRICS"
 
 
 def _safe_print(text: str) -> None:
@@ -446,7 +472,41 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="cProfile toàn bộ report; ghi outputs/performance/profile_report.txt",
     )
+    parser.add_argument(
+        "--fast-dev",
+        action="store_true",
+        help=(
+            "Preset nhanh: smoke universe (hoặc --fast-dev-mini), signal_every=5, "
+            "warmup_years=2, no plots. NOT for final research metrics."
+        ),
+    )
+    parser.add_argument(
+        "--fast-dev-mini",
+        action="store_true",
+        help="Với --fast-dev: dùng 12 mã cố định thay hose_liquid_35",
+    )
+    parser.add_argument(
+        "--no-plots",
+        action="store_true",
+        help="Bỏ qua chart generation (debug/performance; mặc định với --fast-dev)",
+    )
     args = parser.parse_args(argv)
+
+    if args.fast_dev:
+        # Force preset — không đổi thresholds / execution / final-mode defaults khác.
+        args.signal_every = 5
+        args.warmup_years = 2
+        args.no_plots = True
+        if args.out_json == "store/backtest_report.json":
+            args.out_json = "store/backtest_fast_dev.json"
+        if args.out_xlsx == "store/backtest_report.xlsx":
+            args.out_xlsx = "store/backtest_fast_dev.xlsx"
+        if args.fast_dev_mini and not args.tickers:
+            args.universe = "tickers"
+            args.tickers = ",".join(FAST_DEV_MINI_TICKERS)
+        elif not args.tickers and args.universe == "vn100":
+            # fast-dev + vn100 mâu thuẫn → ép smoke.
+            args.universe = "smoke"
 
     if args.profile:
         import cProfile
@@ -481,12 +541,10 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
         _json_safe,
         _load_config,
         _set_quant_flags,
-        _signal_closes,
-        build_scoring_schedule,
-        load_close_by_ticker,
         persist_ablation_to_store,
         run_ablation,
     )
+    from backtest.data_bundle import build_data_bundle
     from backtest.engine import run_backtest
     from backtest.metrics import compute_metrics
     from backtest.walk_forward import run_walk_forward
@@ -502,6 +560,13 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
         sources["price"] = price
         config["data_sources"] = sources
         _safe_print("refresh-data: OHLCV cache disabled for this run")
+
+    fast_dev = bool(getattr(args, "fast_dev", False))
+    no_plots = bool(getattr(args, "no_plots", False) or fast_dev)
+    if fast_dev:
+        _safe_print("=" * 60)
+        _safe_print(FAST_DEV_BANNER)
+        _safe_print("=" * 60)
 
     oos_end = args.oos_end or args.end_date or date.today().isoformat()
     if args.oos_start:
@@ -524,44 +589,57 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
 
     if args.tickers:
         tickers = [t.strip().upper() for t in str(args.tickers).split(",") if t.strip()]
+        universe_label = "tickers"
     elif args.universe == "vn100":
         tickers = _load_vn100_tickers(config, root)
+        universe_label = "vn100"
     elif args.universe == "smoke":
         tickers = _load_smoke_tickers(config, root)
+        universe_label = "smoke"
     else:
         raise SystemExit("--universe tickers requires --tickers")
 
     if not tickers:
         raise SystemExit("Empty ticker list")
 
+    mode_label = "FAST_DEV" if fast_dev else "FINAL"
     _safe_print(
-        f"report: n_tickers={len(tickers)} universe={args.universe} "
+        f"report: mode={mode_label} n_tickers={len(tickers)} universe={universe_label} "
         f"history={hist_start}..{hist_end} oos={oos_start}..{oos_end} "
         f"signal_every={args.signal_every} walk_forward={use_wf} "
-        f"fundamentals={args.with_fundamentals} warmup_years={args.warmup_years}"
+        f"fundamentals={args.with_fundamentals} warmup_years={args.warmup_years} "
+        f"no_plots={no_plots}"
     )
     _safe_print(
         "CAVEAT: fixed/current VN100 research universe — subject to survivorship bias; "
         "assumed fundamental publication lag 90d if no filed_at."
     )
+    if fast_dev:
+        _safe_print(
+            "FAST DEV: metrics are for pipeline/debug only — denser Sharpe −0.84 "
+            "and FINAL VN100 daily remain the research references."
+        )
 
-    fetch_list = list(dict.fromkeys([*tickers, "VNINDEX", "VN30"]))
-    closes = load_close_by_ticker(
-        fetch_list,
-        hist_start,
-        hist_end,
-        config,
-        include_benchmark=True,
+    bundle = build_data_bundle(
+        tickers=tickers,
+        hist_start=hist_start,
+        hist_end=hist_end,
+        oos_start=oos_start,
+        oos_end=oos_end,
+        config=config,
+        with_fundamentals=bool(args.with_fundamentals),
+        lookback_years=max(int(args.lookback_years), 1),
+        db_path=args.db_path,
+        refresh_fundamentals=refresh_fund,
+        mode="fast_dev" if fast_dev else "final",
+        no_plots=no_plots,
     )
-    if not closes:
-        raise SystemExit("No OHLCV loaded — check providers / network / cache")
+    closes = bundle.close_by_ticker
+    signal_closes = bundle.signal_closes
+    scoring_schedule = bundle.scoring_schedule
 
-    signal_closes = _signal_closes(
-        {t: closes[t] for t in tickers if t in closes},
-        config,
-    )
     _safe_print(
-        f"loaded closes={len(closes)} signal_universe={len(signal_closes)} "
+        f"bundle: closes={len(closes)} signal_universe={len(signal_closes)} "
         f"benchmark={_benchmark_ticker(config)} "
         f"has_VNINDEX={'VNINDEX' in closes} has_VN30={'VN30' in closes}"
     )
@@ -584,27 +662,11 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
     except Exception:  # noqa: BLE001
         pass
 
-    scoring_schedule = None
-    if args.with_fundamentals:
-        _safe_print(
-            f"building scoring_schedule (PIT) refresh={refresh_fund}..."
-        )
-        scoring_schedule = build_scoring_schedule(
-            list(signal_closes),
-            hist_start,
-            hist_end,
-            config,
-            lookback_years=max(int(args.lookback_years), 1),
-            db_path=args.db_path,
-            refresh=refresh_fund,
-        )
-        _safe_print(f"scoring_schedule keys={sorted(scoring_schedule)}")
-
-    _safe_print("baseline B0 buy&hold (OOS)...")
+    _safe_print("baseline B0 buy&hold (OOS) — shared bundle...")
     b0 = _buyhold_result(signal_closes, oos_start, oos_end, config)
-    _safe_print("baseline B1 TA (OOS)...")
+    _safe_print("baseline B1 TA (OOS) — shared bundle...")
     b1 = _b1_ta_result(signal_closes, oos_start, oos_end, config)
-    _safe_print("baseline B2 CANSLIM (OOS)...")
+    _safe_print("baseline B2 CANSLIM (OOS) — shared bundle...")
     b2 = _b2_canslim_result(signal_closes, oos_start, oos_end, config)
 
     _safe_print("framework stack (regime+alpha+risk) with warmup history...")
@@ -658,7 +720,7 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
             f"sharpe_std={_fmt(fold_meta['fold_sharpe_std'])}"
         )
 
-    _safe_print("ablation layers (OOS window)...")
+    _safe_print("ablation layers (OOS window) — shared bundle...")
     ablation = run_ablation(
         config,
         close_by_ticker=closes,
@@ -694,7 +756,10 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
     ]
 
     _safe_print("")
-    _safe_print("=== BACKTEST REPORT ===")
+    title = "=== BACKTEST REPORT (FAST DEV) ===" if fast_dev else "=== BACKTEST REPORT ==="
+    _safe_print(title)
+    if fast_dev:
+        _safe_print(FAST_DEV_BANNER)
     _print_table(columns)
     _safe_print("")
     mfw = dict(fw_col_source.get("metrics") or {})
@@ -704,7 +769,17 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
         f"neutral={mfw.get('sharpe_neutral_display', 'N/A')}"
     )
 
+    if no_plots:
+        _safe_print("plots: skipped (--no-plots / --fast-dev)")
+    else:
+        _safe_print(
+            "plots: deferred (generate after simulation; see docs/BACKTEST_FINAL_REPORT.md §D)"
+        )
+
     meta = {
+        "mode": mode_label,
+        "fast_dev": fast_dev,
+        "no_plots": no_plots,
         "start_date": hist_start,
         "end_date": hist_end,
         "oos_start": oos_start,
@@ -712,7 +787,7 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
         "data_start_actual": data_start,
         "n_tickers": len(tickers),
         "tickers": tickers,
-        "universe": args.universe,
+        "universe": universe_label,
         "signal_every": int(args.signal_every),
         "walk_forward": use_wf,
         "with_fundamentals": bool(args.with_fundamentals),
@@ -736,7 +811,12 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
             for s in (ablation.get("steps") or [])
         ],
         "note": (
-            "Khong cook OOS; denser Sharpe -0.84 giu trong DECISIONS. "
+            (
+                "FAST DEV — NOT FOR FINAL RESEARCH METRICS. "
+                if fast_dev
+                else "FINAL research mode. "
+            )
+            + "Khong cook OOS; denser Sharpe -0.84 giu trong DECISIONS. "
             "Execution Close T+1; risk = inverse-vol normalize + w_max."
         ),
     }
@@ -832,6 +912,9 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
             scope="portfolio",
         )
         _safe_print(f"store: {persisted.get('note')}")
+
+    if fast_dev:
+        _safe_print(FAST_DEV_BANNER)
 
     return 0
 

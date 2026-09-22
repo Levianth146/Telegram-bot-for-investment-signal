@@ -357,3 +357,50 @@ python scripts/profile_backtest_smoke.py --out outputs/performance/profile_after
 # VN100 warm (cache hit OHLCV + year schedule)
 python scripts/run_backtest_report.py --universe vn100 --with-fundamentals --signal-every 1 --oos-start 2025-03-22 --oos-end 2025-09-22 --warmup-years 3 --no-walk-forward --out-json store/backtest_final_vn100_20260922.json
 ```
+
+### FAST DEV vs FINAL (2026-09-22) — không cook OOS; denser −0.84 giữ
+
+Hai chế độ trên `scripts/run_backtest_report.py` (prompt tối ưu §14):
+
+| Mode | Khi nào | Universe | Cadence | Warmup | Plots | Dùng làm research? |
+|---|---|---|---|---|---|---|
+| **FAST DEV** (`--fast-dev`) | Cần bảng/metrics debug **tonight** | smoke 35 hoặc `--fast-dev-mini` (12 mã) | `signal_every=5` | 2y | off | **Không** |
+| **FINAL** | Báo cáo / so sánh chiến lược | VN100 | `signal_every=1` daily | 3y | sau sim | **Có** |
+
+Banner bắt buộc khi FAST DEV: `FAST DEV MODE — NOT FOR FINAL RESEARCH METRICS`.
+
+Thêm (không đổi semantics final):
+
+| Thay đổi | Chi tiết |
+|---|---|
+| `BacktestDataBundle` | Load prices + PIT schedule **1×**; B0/B1/B2/FW/ablation share |
+| `--no-plots` | Skip chart generation (mặc định với `--fast-dev`) |
+| year_*.pkl log | `CACHE HIT` / `CACHE MISS` + ETA ước lượng khi cold |
+| Markov/GARCH | Same-day memo trong một run — **không** đổi daily→weekly |
+
+**Denser OOS Sharpe −0.84** (12 mã, no-fund, `signal_every=21`) **vẫn giữ** ở mục P1 denser phía trên — FAST DEV **không** thay thế số đó.
+
+```text
+# FAST DEV (smoke 35)
+python scripts/run_backtest_report.py --fast-dev --with-fundamentals --oos-start 2025-03-22 --oos-end 2025-09-22 --no-walk-forward --out-json store/backtest_fast_dev.json --out-xlsx store/backtest_fast_dev.xlsx
+
+# FAST DEV mini (12 mã) nếu fund 35 chậm
+python scripts/run_backtest_report.py --fast-dev --fast-dev-mini --with-fundamentals --oos-start 2025-03-22 --oos-end 2025-09-22 --no-walk-forward --out-json store/backtest_fast_dev.json --out-xlsx store/backtest_fast_dev.xlsx
+```
+
+### Sync audit framework ↔ ARCHITECTURE ↔ code (2026-09-22)
+
+Kiểm tra readonly + `pytest -q` (không retune OOS).
+
+| Invariant / scope | Kết quả | Ghi chú |
+|---|---|---|
+| Bot chỉ đọc store (no fit/crawl on command) | **PASS** | `bot/main.py` không import vnstock/HTTP; `is_excluded_financial` chỉ phân loại OUT_OF_SCOPE |
+| Shared live↔backtest (`score_current_universe` / `generate_signals`) | **PASS** | `test_shared_live_backtest_path` + backtest engine |
+| PIT lag 90d / annual BCTC V1 | **PASS** | `config` + `data/ingest/pit.py` |
+| VN100 Tier1 + `quant_from_watchlist` + smoke 35 | **PASS** | `pipeline/config.yaml`; README + ARCHITECTURE đã ghi rõ |
+| P0 FF+Regime+Alpha+GARCH on; MC/BL/Merton/Hawkes/DCF off | **PASS** | Đúng gate DECISIONS |
+| Backtest T+1 / costs / FAIL exit / `fundamental_view` | **PASS** | Tests trong `backtest/tests/test_backtest.py` |
+| Pytest suite | **PASS** | **189 passed**, 8 skipped |
+| Doc path framework `.docx` | **PASS** | Repo root (không `docs/khung_…`) |
+
+**GAP ops (không chặn compile/test):** `sector_mapping` historically mỏng vs full VN100 peer INDUSTRY — xem audit E2E A4; bổ sung batch `sector_job` khi ops. Final VN100 daily+fund vẫn **chạy lâu** (API Community) — dùng FAST DEV cho bảng nhanh; denser −0.84 giữ nguyên.

@@ -90,12 +90,22 @@ Sau khi ghi `signals`, `pipeline/daily_job.py` đọc `subscribers` và (nếu `
 gửi push. Benchmark (`quant_engine.benchmark`, thường VNINDEX) chỉ dùng cho regime — không
 sinh hàng `signals`.
 
+### Universe V1 (đồng bộ `pipeline/config.yaml`)
+
+- **Tier 1 Fundamental:** `data/universe/vn100.csv` (`universe.fundamental_file`).
+- **Tier 2 Quant (daily):** chỉ mã PASS/WATCH trên watchlist (`quant_from_watchlist: true`)
+  + benchmark `VNINDEX` cho regime (không ghi hàng `signals` cho benchmark).
+- **Smoke / ablation nhanh:** `data/universe/hose_liquid_35.csv` (`universe.smoke_file`) —
+  không phải universe live chính.
+- **Sàn:** HOSE + HNX (`allowed_exchanges`); loại tài chính khi `exclude_financials: true`.
+
 ### Ops live (một máy)
 
 1. `.env`: `BOT_TOKEN`, `DATABASE_PATH=store/bot.db` (xem `.env.example`).
-2. `python scripts/run_daily_pipeline.py` — optional `--with-sector`; persist + push.
-3. `python -m bot.main` — polling; user `/subscribe` trước khi kỳ vọng push > 0.
-4. Bot chỉ đọc `store/`; không crawl vendor trong handlers.
+2. `python -m pipeline.quarterly_job` — Tier 1 trên VN100 (BCTC / event).
+3. `python scripts/run_daily_pipeline.py` — optional `--with-sector`; persist + push.
+4. `python -m bot.main` — polling; user `/subscribe` trước khi kỳ vọng push > 0.
+5. Bot chỉ đọc `store/`; không crawl vendor trong handlers. Chi tiết lệnh: `README.md`.
 
 ### Lịch daily (Windows)
 

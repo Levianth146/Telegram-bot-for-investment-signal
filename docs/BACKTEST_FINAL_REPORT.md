@@ -1,7 +1,24 @@
 # BACKTEST FINAL REPORT — VN100 Framework Fix
 
 **Date:** 2026-09-22  
-**Status:** Correctness fixes shipped; smoke run documented; full VN100 daily+fund may be long-running.
+**Status:** Correctness fixes shipped; smoke / FAST DEV for tonight tables; full VN100 daily+fund may be long-running (cold fund cache).
+
+## Modes: FAST DEV vs FINAL
+
+| | FAST DEV | FINAL |
+|---|---|---|
+| Flag | `--fast-dev` (+ optional `--fast-dev-mini`) | `--universe vn100 --signal-every 1` |
+| Purpose | Pipeline/debug table **tonight** | Research metrics |
+| Universe | smoke 35 or 12 fixed | VN100 |
+| `signal_every` | 5 | 1 (daily) |
+| Warmup | 2y | 3y |
+| Fundamentals | on (default) | on |
+| Plots | off | after simulation |
+| Banner | `FAST DEV MODE — NOT FOR FINAL RESEARCH METRICS` | — |
+| Replaces denser −0.84? | **No** | **No** (keeps it) |
+
+Artifacts FAST DEV: `store/backtest_fast_dev.json` + `.xlsx`.  
+Artifacts FINAL: `store/backtest_final_vn100_*.json` (+ xlsx).
 
 ## A. Research setup
 
@@ -88,6 +105,21 @@ Denser historical log Sharpe **−0.84** (12 tickers, no-fund, `signal_every=21`
 
 ## Reproduce
 
+### FAST DEV (tonight table — not final research)
+
+```powershell
+cd d:\Projects\Telegram-bot-for-investment-signal
+# smoke 35
+python scripts/run_backtest_report.py --fast-dev --with-fundamentals `
+  --oos-start 2025-03-22 --oos-end 2025-09-22 --no-walk-forward `
+  --out-json store/backtest_fast_dev.json --out-xlsx store/backtest_fast_dev.xlsx
+
+# nếu fund 35 chậm → 12 mã cố định
+python scripts/run_backtest_report.py --fast-dev --fast-dev-mini --with-fundamentals `
+  --oos-start 2025-03-22 --oos-end 2025-09-22 --no-walk-forward `
+  --out-json store/backtest_fast_dev.json --out-xlsx store/backtest_fast_dev.xlsx
+```
+
 ### Smoke (CLI + metrics proof)
 
 ```powershell
@@ -116,7 +148,7 @@ python scripts/run_backtest_report.py `
 
 Lần 2 (warm): cùng lệnh — OHLCV CSV + `data/cache/scoring_schedule/{key}/year_*.pkl` hit → skip API fund theo năm đã có. Force rebuild: thêm `--refresh-fundamentals` hoặc `--refresh-data`.
 
-**Speed note (2026-09-22):** FF event-driven precompute + year schedule cache + truncate/regime memo — **không** đổi logic/trades; denser Sharpe **−0.84** trong DECISIONS giữ nguyên. Profile: `scripts/profile_backtest_smoke.py` → `outputs/performance/profile_*.txt`.
+**Speed note (2026-09-22):** FF event-driven precompute + year schedule cache + `BacktestDataBundle` + Markov/GARCH same-day memo + `--fast-dev` / `--no-plots` — **không** đổi logic/trades; denser Sharpe **−0.84** trong DECISIONS giữ nguyên. Profile: `scripts/profile_backtest_smoke.py` → `outputs/performance/profile_*.txt`.
 
 ### Unit tests
 

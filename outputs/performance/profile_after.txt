@@ -1,0 +1,66 @@
+=== BACKTEST SMOKE PROFILE ===
+elapsed_sec=5.9982
+n_trades=0
+equity_points=80
+with_fundamentals=True
+signal_every=1
+
+--- top 20 by cumtime ---
+         4840396 function calls (4757747 primitive calls) in 5.994 seconds
+
+   Ordered by: cumulative time
+   List reduced from 7772 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      195    0.008    0.000   10.151    0.052 __init__.py:1(<module>)
+        1    0.000    0.000    5.998    5.998 profile_backtest_smoke.py:97(run_smoke)
+        1    0.006    0.006    5.145    5.145 engine.py:196(run_backtest)
+       54    0.015    0.000    5.072    0.094 signal_engine.py:161(generate_signals)
+      204    0.003    0.000    4.035    0.020 garch.py:55(fit_or_fallback_sigma)
+      204    0.002    0.000    3.883    0.019 garch.py:23(fit_gjr_garch)
+   1636/3    0.017    0.000    3.043    1.014 <frozen importlib._bootstrap>:1349(_find_and_load)
+   1606/3    0.010    0.000    3.043    1.014 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+   1567/4    0.007    0.000    3.041    0.760 <frozen importlib._bootstrap>:911(_load_unlocked)
+   1366/4    0.005    0.000    3.041    0.760 <frozen importlib._bootstrap_external>:989(exec_module)
+   3808/7    0.004    0.000    3.039    0.434 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+   1709/4    0.055    0.000    3.038    0.760 {built-in method builtins.exec}
+   804/46    0.002    0.000    2.638    0.057 {built-in method builtins.__import__}
+2406/1026    0.005    0.000    2.419    0.002 <frozen importlib._bootstrap>:1390(_handle_fromlist)
+       80    0.009    0.000    1.585    0.020 base.py:617(fit)
+       80    0.003    0.000    1.305    0.016 _minimize.py:53(minimize)
+       80    0.047    0.001    1.288    0.016 _slsqp_py.py:215(_minimize_slsqp)
+     5040    0.136    0.000    0.958    0.000 _numdiff.py:276(approx_derivative)
+     1366    0.018    0.000    0.883    0.001 <frozen importlib._bootstrap_external>:1062(get_code)
+53146/49174    0.019    0.000    0.857    0.000 {built-in method builtins.hasattr}
+
+
+
+--- top 20 by ncalls ---
+         4840396 function calls (4757747 primitive calls) in 5.994 seconds
+
+   Ordered by: call count
+   List reduced from 7772 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+519799/518133    0.114    0.000    0.155    0.000 {built-in method builtins.isinstance}
+365075/343432    0.059    0.000    0.067    0.000 {built-in method builtins.len}
+   181016    0.036    0.000    0.036    0.000 {method 'append' of 'list' objects}
+   161257    0.040    0.000    0.043    0.000 {built-in method builtins.getattr}
+   156714    0.033    0.000    0.033    0.000 {method 'startswith' of 'str' objects}
+   109440    0.022    0.000    0.022    0.000 {method 'lstrip' of 'str' objects}
+    92153    0.023    0.000    0.026    0.000 {method 'get' of 'dict' objects}
+    84973    0.019    0.000    0.019    0.000 {built-in method builtins.min}
+    64685    0.012    0.000    0.012    0.000 {built-in method builtins.issubclass}
+53146/49174    0.019    0.000    0.857    0.000 {built-in method builtins.hasattr}
+    52433    0.032    0.000    0.032    0.000 {method 'astype' of 'numpy.ndarray' objects}
+    50035    0.017    0.000    0.017    0.000 {built-in method numpy.asanyarray}
+    43787    0.013    0.000    0.013    0.000 {method 'endswith' of 'str' objects}
+    42305    0.006    0.000    0.006    0.000 {built-in method builtins.callable}
+41420/39619    0.019    0.000    0.097    0.000 {built-in method numpy.asarray}
+    38139    0.075    0.000    0.075    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+    38047    0.009    0.000    0.009    0.000 {method 'rstrip' of 'str' objects}
+37675/37668    0.020    0.000    0.024    0.000 {method 'join' of 'str' objects}
+    36722    0.004    0.000    0.004    0.000 typing.py:2182(cast)
+36712/36505    0.008    0.000    0.008    0.000 {built-in method builtins.hash}
+
+

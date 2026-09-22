@@ -1077,3 +1077,127 @@ def test_truncate_searchsorted_matches_loc():
     got = _truncate(s, as_of)
     assert list(got.index) == list(legacy.index)
     assert list(got.values) == list(legacy.values)
+
+
+def test_fast_dev_cli_preset_and_banner():
+    """--fast-dev constants: banner + mini 12-ticker fallback (plan A3)."""
+    import scripts.run_backtest_report as rpt
+
+    assert rpt.FAST_DEV_BANNER == "FAST DEV MODE — NOT FOR FINAL RESEARCH METRICS"
+    assert len(rpt.FAST_DEV_MINI_TICKERS) == 12
+    for t in (
+        "FPT",
+        "VNM",
+        "GAS",
+        "MWG",
+        "REE",
+        "PNJ",
+        "PLX",
+        "GVR",
+        "VHM",
+        "VHC",
+        "DCM",
+        "SAB",
+    ):
+        assert t in rpt.FAST_DEV_MINI_TICKERS
+
+
+def test_build_scoring_schedule_cache_hit_log(monkeypatch, tmp_path, capsys):
+    """CACHE HIT log rõ khi year_*.pkl đã có."""
+    from backtest import ablation as ablation_mod
+
+    calls: list[tuple[int, int]] = []
+
+    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db"):
+        calls.append((start_year, end_year))
+        import pandas as pd
+
+        return {
+            "VNM": pd.DataFrame(
+                {"year": [end_year], "ticker": ["VNM"], "revenue": [1.0]}
+            )
+        }
+
+    monkeypatch.setattr(
+        "data.ingest.scoring_frames.build_scoring_frames_from_providers",
+        fake_build,
+    )
+    cfg = {
+        "data_sources": {
+            "financial_statements_backtest": {"assumed_publication_lag_days": 90}
+        }
+    }
+    ablation_mod.build_scoring_schedule(
+        ["VNM"],
+        "2021-01-01",
+        "2021-12-31",
+        cfg,
+        lookback_years=2,
+        include_prior_year=False,
+        cache_dir=tmp_path,
+        refresh=True,
+    )
+    calls.clear()
+    ablation_mod.build_scoring_schedule(
+        ["VNM"],
+        "2021-01-01",
+        "2021-12-31",
+        cfg,
+        lookback_years=2,
+        include_prior_year=False,
+        cache_dir=tmp_path,
+        refresh=False,
+    )
+    out = capsys.readouterr().out
+    assert "CACHE HIT" in out
+    assert calls == []
+
+
+def test_garch_same_day_memo(monkeypatch):
+    """garch_cache: cùng (as_of, ticker, n) → không fit lại."""
+    from quant_engine import signal_engine as se
+
+    fits = {"n": 0}
+    real = se.fit_or_fallback_sigma
+
+    def counting(returns, window=20):
+        fits["n"] += 1
+        return real(returns, window=window)
+
+    monkeypatch.setattr(se, "fit_or_fallback_sigma", counting)
+
+    idx = pd.bdate_range("2023-01-02", periods=120).strftime("%Y-%m-%d")
+    closes = {
+        "AAA": pd.Series(100 + np.cumsum(np.random.default_rng(0).normal(0, 1, 120)), index=list(idx)),
+        "VNINDEX": pd.Series(
+            1000 + np.cumsum(np.random.default_rng(1).normal(0, 1, 120)), index=list(idx)
+        ),
+    }
+    cfg = {
+        "quant_engine": {
+            "benchmark": "VNINDEX",
+            "regime_markov": {"enabled": False},
+            "alpha_kalman_trend": {"enabled": False},
+            "alpha_ou_meanreversion": {"enabled": False},
+            "risk_garch": {"enabled": True},
+        }
+    }
+    cache: dict = {}
+    as_of = idx[-1]
+    se.generate_signals(
+        closes,
+        as_of_date=as_of,
+        signal_tickers=["AAA"],
+        config=cfg,
+        garch_cache=cache,
+    )
+    n1 = fits["n"]
+    assert n1 >= 1
+    se.generate_signals(
+        closes,
+        as_of_date=as_of,
+        signal_tickers=["AAA"],
+        config=cfg,
+        garch_cache=cache,
+    )
+    assert fits["n"] == n1  # same-day memo hit

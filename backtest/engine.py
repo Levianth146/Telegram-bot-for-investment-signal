@@ -253,8 +253,9 @@ def run_backtest(
     )
     # Map ngày → vị trí trên calendar (prev_price O(1) thay vì scan list).
     day_pos = {d: i for i, d in enumerate(calendar)}
-    # Regime memo trong một run: cùng as_of + cùng benchmark end → không fit lại.
+    # Regime + GARCH same-day memo trong một run (không đổi daily→weekly).
     regime_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
+    garch_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
 
     cash = float(initial_equity)
     # ticker -> {qty_value at entry, entry_price, stop, entry_date, shares}
@@ -445,6 +446,7 @@ def run_backtest(
                     config=cfg,
                     signal_tickers=emit,
                     regime_cache=regime_memo,
+                    garch_cache=garch_memo,
                 )
                 all_signals.extend(day_signals)
                 for row in day_signals:

@@ -532,7 +532,12 @@ def build_scoring_schedule(
     schedule: dict[str, dict[str, Any]] = {}
     hits = 0
     misses = 0
-    for year in range(first_y, end_y + 1):
+    years = list(range(first_y, end_y + 1))
+    n_years = len(years)
+    miss_secs: list[float] = []
+    import time as _time
+
+    for yi, year in enumerate(years):
         frame_start = year - lookback_years + 1
         year_path = year_dir / f"year_{year}.pkl"
         filed = assumed_filed_at(year, lag)
@@ -545,7 +550,8 @@ def build_scoring_schedule(
                     schedule[filed] = frames
                     hits += 1
                     print(
-                        f"scoring_schedule: year={year} CACHE HIT → {year_path.name}",
+                        f"scoring_schedule: year={year} CACHE HIT → {year_path.name} "
+                        f"({year_path})",
                         flush=True,
                     )
                     continue
@@ -555,10 +561,18 @@ def build_scoring_schedule(
                     flush=True,
                 )
 
+        remaining = n_years - yi
+        if miss_secs:
+            eta_s = float(sum(miss_secs) / len(miss_secs)) * remaining
+            eta_msg = f" ETA≈{eta_s / 60.0:.1f}min ({remaining} years left @ avg miss)"
+        else:
+            eta_msg = f" (CACHE MISS — cold year; {remaining} years in window)"
         print(
-            f"scoring_schedule: year={year} frames={frame_start}..{year} ...",
+            f"scoring_schedule: year={year} CACHE MISS → fetch frames={frame_start}..{year}"
+            f"{eta_msg}",
             flush=True,
         )
+        t0 = _time.perf_counter()
         frames = build_scoring_frames_from_providers(
             tickers_u,
             frame_start,
@@ -566,9 +580,15 @@ def build_scoring_schedule(
             config=dict(config or {}),
             db_path=db_path,
         )
+        elapsed = _time.perf_counter() - t0
+        miss_secs.append(elapsed)
         misses += 1
         if not frames:
-            print(f"scoring_schedule: skip empty frames for year={year}", flush=True)
+            print(
+                f"scoring_schedule: skip empty frames for year={year} "
+                f"({elapsed:.1f}s)",
+                flush=True,
+            )
             continue
         schedule[filed] = frames
         # Ghi ngay sau mỗi năm (resume-friendly).
@@ -576,7 +596,7 @@ def build_scoring_schedule(
             with year_path.open("wb") as fh:
                 pickle.dump(frames, fh, protocol=pickle.HIGHEST_PROTOCOL)
             print(
-                f"scoring_schedule: year={year} wrote {year_path}",
+                f"scoring_schedule: year={year} wrote {year_path} ({elapsed:.1f}s)",
                 flush=True,
             )
         except Exception as exc:  # noqa: BLE001
@@ -587,7 +607,7 @@ def build_scoring_schedule(
 
     print(
         f"scoring_schedule: done cache_key={cache_key} hits={hits} misses={misses} "
-        f"keys={len(schedule)} refresh={refresh}",
+        f"keys={len(schedule)} refresh={refresh} dir={year_dir}",
         flush=True,
     )
     return schedule

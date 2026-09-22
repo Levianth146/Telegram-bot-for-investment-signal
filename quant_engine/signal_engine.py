@@ -167,6 +167,7 @@ def generate_signals(
     signal_tickers: list[str] | None = None,
     config: Mapping[str, Any] | None = None,
     regime_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
+    garch_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate one signals row per ticker (schema.sql contract).
 
@@ -186,6 +187,9 @@ def generate_signals(
     regime_cache:
         Optional memo ``{(as_of, benchmark, n_returns): probabilities}`` — tránh
         fit Markov trùng trong cùng experiment khi cùng cửa sổ expanding.
+    garch_cache:
+        Optional same-day memo ``{(as_of, ticker, n_returns): risk_pack}`` — tránh
+        fit GARCH trùng cùng as_of trong một run (không đổi daily→weekly).
     """
     if not close_by_ticker:
         return []
@@ -303,8 +307,19 @@ def generate_signals(
         if len(close) < 30:
             continue
         returns = _log_returns(close)
+        n_rets = int(len(returns))
+        garch_key = (str(as_of_date), str(ticker), n_rets)
         if garch_enabled:
-            risk = fit_or_fallback_sigma(returns)
+            if garch_cache is not None and garch_key in garch_cache:
+                risk = dict(garch_cache[garch_key])
+            else:
+                risk = fit_or_fallback_sigma(returns)
+                if garch_cache is not None:
+                    # Không cache object model nặng — chỉ sigma/method (same-day reuse).
+                    garch_cache[garch_key] = {
+                        "sigma_hat": risk.get("sigma_hat"),
+                        "method": risk.get("method"),
+                    }
         else:
             risk = {
                 "sigma_hat": float(returns.iloc[-20:].std(ddof=1))
