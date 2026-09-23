@@ -294,3 +294,182 @@ def test_pass_message_has_subscribe_cta():
     fund = {"fundamental_view": "PASS", "headline_json": "{}"}
     msg = formatters.format_signal_message(signal, fund)
     assert "/subscribe" in msg
+
+
+def test_c4_insufficient_watch_reason_not_check_watch():
+    """C4 — WATCH + INSUFFICIENT_DATA → INSUFFICIENT, không CHECK_WATCH."""
+    fund = {
+        "fundamental_view": "WATCH",
+        "growth_score": 40,
+        "quality_score": 40,
+        "safety_score": 40,
+        "valuation_score": 40,
+        "headline_json": '{"classification_reason": "INSUFFICIENT_DATA"}',
+    }
+    state = formatters.resolve_check_state(
+        in_universe=True,
+        is_financial=False,
+        exclude_financials=True,
+        fund=fund,
+        signal=None,
+        has_open_position=False,
+    )
+    assert state == formatters.CHECK_INSUFFICIENT
+    assert state != formatters.CHECK_WATCH
+
+
+def test_c5_critical_flag_without_insufficient_word():
+    """C5 — critical_data_quality_flag=true, reason không chứa INSUFFICIENT."""
+    fund = {
+        "fundamental_view": "WATCH",
+        "growth_score": 50,
+        "quality_score": 50,
+        "safety_score": 50,
+        "valuation_score": 50,
+        "headline_json": (
+            '{"classification_reason": "MIDDLE_PERCENTILE", '
+            '"data_quality": {"critical_data_quality_flag": true}}'
+        ),
+    }
+    assert formatters.is_insufficient_fundamental(fund) is True
+    state = formatters.resolve_check_state(
+        in_universe=True,
+        is_financial=False,
+        exclude_financials=True,
+        fund=fund,
+        signal=None,
+        has_open_position=False,
+    )
+    assert state == formatters.CHECK_INSUFFICIENT
+
+
+def test_c5b_missing_pillar_score_resolves_insufficient():
+    """C5 structural — growth_score=None + reason trống → INSUFFICIENT."""
+    fund = {
+        "fundamental_view": "WATCH",
+        "growth_score": None,
+        "quality_score": 50,
+        "safety_score": 50,
+        "valuation_score": 50,
+        "headline_json": "{}",
+    }
+    state = formatters.resolve_check_state(
+        in_universe=True,
+        is_financial=False,
+        exclude_financials=True,
+        fund=fund,
+        signal=None,
+        has_open_position=False,
+    )
+    assert state == formatters.CHECK_INSUFFICIENT
+
+
+def test_fail_not_on_watchlist_still_checkable():
+    """C10 — FAIL không trong watchlist vẫn resolve FAIL (không phụ thuộc watchlist)."""
+    fund = {
+        "fundamental_view": "FAIL",
+        "growth_score": 30,
+        "quality_score": 28,
+        "safety_score": 25,
+        "valuation_score": 20,
+        "headline_json": '{"classification_reason": "BELOW_WATCH_PERCENTILE"}',
+    }
+    state = formatters.resolve_check_state(
+        in_universe=True,
+        is_financial=False,
+        exclude_financials=True,
+        fund=fund,
+        signal={"ticker": "HPG", "action": "BUY", "score": 1.0},  # stale — bỏ qua
+        has_open_position=False,
+    )
+    assert state == formatters.CHECK_FAIL
+    msg = formatters.format_check_by_state(
+        state, "HPG", fund=fund, meta={"last_close": 22.0}
+    )
+    assert "Không vượt bộ lọc Fundamental" in msg
+    assert "Tín hiệu hệ thống: MUA" not in msg
+
+
+def test_out_of_scope_appends_ta_when_present():
+    msg = formatters.format_check_by_state(
+        formatters.CHECK_OUT_OF_SCOPE,
+        "ZZZ",
+        meta={"last_close": 10.0},
+        ta_indicators={"rsi_14": 45.0},
+    )
+    assert "Tham khảo thêm" in msg
+    assert "phạm vi" in msg.casefold() or "ngoài" in msg.casefold()
+
+
+def _actions_from_rows(rows: list[list[tuple[str, str]]]) -> set[str]:
+    """Lấy tập action từ callback_data chk:<action>:<TICKER>."""
+    out: set[str] = set()
+    for row in rows:
+        for _lab, cb in row:
+            parts = cb.split(":")
+            assert parts[0] == "chk"
+            out.add(parts[1])
+            assert len(cb.encode("utf-8")) <= 64
+    return out
+
+
+def test_check_keyboard_by_state_c2():
+    """C-4.1 — đúng bộ nút theo từng state (có giá)."""
+    t = "MWG"
+    # OUT / EXCLUDED / INSUFFICIENT → chỉ TA khi có giá
+    for st in (
+        formatters.CHECK_OUT_OF_SCOPE,
+        formatters.CHECK_EXCLUDED_FINANCIAL,
+        formatters.CHECK_INSUFFICIENT,
+    ):
+        acts = _actions_from_rows(
+            formatters.check_keyboard_rows(st, t, has_price_bars=True)
+        )
+        assert acts == {"ta"}
+        assert (
+            formatters.check_keyboard_rows(st, t, has_price_bars=False) == []
+        )
+
+    fail_acts = _actions_from_rows(
+        formatters.check_keyboard_rows(
+            formatters.CHECK_FAIL, t, has_price_bars=True
+        )
+    )
+    assert fail_acts == {"radar", "ta"}
+
+    for st in (
+        formatters.CHECK_WATCH,
+        formatters.CHECK_PASS_NO_SIGNAL,
+        formatters.CHECK_PASS,
+    ):
+        acts = _actions_from_rows(
+            formatters.check_keyboard_rows(st, t, has_price_bars=True)
+        )
+        assert acts == {"price", "radar", "ta", "watch_add"}
+
+    pos_acts = _actions_from_rows(
+        formatters.check_keyboard_rows(
+            formatters.CHECK_POSITION, t, has_price_bars=True
+        )
+    )
+    assert pos_acts == {"pnl", "price", "radar", "ta", "watch_add"}
+    # pnl đứng trước các nút base
+    flat = [
+        a
+        for row in formatters.check_keyboard_rows(
+            formatters.CHECK_POSITION, t, has_price_bars=True
+        )
+        for a in row
+    ]
+    assert flat[0][1].startswith("chk:pnl:")
+
+
+def test_check_keyboard_callback_len_and_build():
+    """C-4.2 — callback_data ≤ 64 byte; build_* trả InlineKeyboardMarkup."""
+    kb = formatters.build_check_keyboard(
+        formatters.CHECK_PASS, "FPT", has_price_bars=True
+    )
+    assert kb is not None
+    for row in kb.inline_keyboard:
+        for btn in row:
+            assert len(btn.callback_data.encode("utf-8")) <= 64

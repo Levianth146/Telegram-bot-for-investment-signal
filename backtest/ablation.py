@@ -32,6 +32,15 @@ DEFAULT_LAYERS = [
 SHARPE_KEEP_DELTA = 0.10
 
 
+def _safe_print(text: str) -> None:
+    """Print an toàn trên console Windows cp1252 (tránh crash vì mũi tên Unicode)."""
+    try:
+        print(text, flush=True)
+    except UnicodeEncodeError:
+        enc = getattr(getattr(__import__("sys"), "stdout"), "encoding", None) or "ascii"
+        print(text.encode(enc, errors="replace").decode(enc, errors="replace"), flush=True)
+
+
 def _benchmark_ticker(config: Mapping[str, Any] | None) -> str | None:
     q = dict((config or {}).get("quant_engine") or {})
     raw = str(q.get("benchmark") or "").strip().upper()
@@ -549,28 +558,25 @@ def build_scoring_schedule(
                 if isinstance(frames, dict) and frames:
                     schedule[filed] = frames
                     hits += 1
-                    print(
-                        f"scoring_schedule: year={year} CACHE HIT → {year_path.name} "
-                        f"({year_path})",
-                        flush=True,
+                    _safe_print(
+                        f"scoring_schedule: year={year} CACHE HIT -> {year_path.name} "
+                        f"({year_path})"
                     )
                     continue
             except Exception as exc:  # noqa: BLE001
-                print(
-                    f"scoring_schedule: year={year} cache corrupt ({exc}); rebuild",
-                    flush=True,
+                _safe_print(
+                    f"scoring_schedule: year={year} cache corrupt ({exc}); rebuild"
                 )
 
         remaining = n_years - yi
         if miss_secs:
             eta_s = float(sum(miss_secs) / len(miss_secs)) * remaining
-            eta_msg = f" ETA≈{eta_s / 60.0:.1f}min ({remaining} years left @ avg miss)"
+            eta_msg = f" ETA~{eta_s / 60.0:.1f}min ({remaining} years left @ avg miss)"
         else:
-            eta_msg = f" (CACHE MISS — cold year; {remaining} years in window)"
-        print(
-            f"scoring_schedule: year={year} CACHE MISS → fetch frames={frame_start}..{year}"
-            f"{eta_msg}",
-            flush=True,
+            eta_msg = f" (CACHE MISS - cold year; {remaining} years in window)"
+        _safe_print(
+            f"scoring_schedule: year={year} CACHE MISS -> fetch frames={frame_start}..{year}"
+            f"{eta_msg}"
         )
         t0 = _time.perf_counter()
         frames = build_scoring_frames_from_providers(
@@ -648,6 +654,7 @@ def run_ablation(
             label = "fundamental"
         elif layer == "regime":
             # Regime on; alpha off (alpha_eff NaN → WATCH-heavy — isolates regime).
+            # P2-2: signal_tickers=None → engine dùng watchlist Tầng 1 động (khớp live).
             cfg = _set_quant_flags(config, regime=True, alpha=False, risk=False)
             result = run_backtest(
                 cfg,
@@ -656,10 +663,11 @@ def run_ablation(
                 close_by_ticker=close_by_ticker,
                 scoring_schedule=scoring_schedule,
                 signal_every_n_days=signal_every_n_days,
-                signal_tickers=list(signal_closes),
+                signal_tickers=None,
             )
             label = "regime"
         elif layer == "alpha":
+            # P2-2: signal_tickers=None → engine dùng watchlist Tầng 1 động (khớp live).
             cfg = _set_quant_flags(config, regime=True, alpha=True, risk=False)
             result = run_backtest(
                 cfg,
@@ -668,10 +676,11 @@ def run_ablation(
                 close_by_ticker=close_by_ticker,
                 scoring_schedule=scoring_schedule,
                 signal_every_n_days=signal_every_n_days,
-                signal_tickers=list(signal_closes),
+                signal_tickers=None,
             )
             label = "alpha"
         elif layer == "risk":
+            # P2-2: signal_tickers=None → engine dùng watchlist Tầng 1 động (khớp live).
             cfg = _set_quant_flags(config, regime=True, alpha=True, risk=True)
             result = run_backtest(
                 cfg,
@@ -680,7 +689,7 @@ def run_ablation(
                 close_by_ticker=close_by_ticker,
                 scoring_schedule=scoring_schedule,
                 signal_every_n_days=signal_every_n_days,
-                signal_tickers=list(signal_closes),
+                signal_tickers=None,
             )
             label = "risk"
         else:
@@ -1421,6 +1430,7 @@ def main(argv: list[str] | None = None) -> int:
 
         print("walk_forward: full P0 stack ...", flush=True)
         wf_cfg = _set_quant_flags(config, regime=True, alpha=True, risk=True)
+        # P2-2: signal_tickers=None → watchlist Tầng 1 động (khớp live daily_job).
         wf = run_walk_forward(
             wf_cfg,
             start,
@@ -1428,7 +1438,7 @@ def main(argv: list[str] | None = None) -> int:
             close_by_ticker=closes,
             scoring_schedule=scoring_schedule,
             signal_every_n_days=max(int(args.signal_every), 1),
-            signal_tickers=list(signal_names),
+            signal_tickers=None,
         )
         wm = wf.get("metrics") or {}
         walk_forward_payload = {

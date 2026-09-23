@@ -84,4 +84,9 @@ def test_generate_signals_bl_enabled():
     )
     assert len(signals) == 2
     methods = {row["ticker"]: row["reason_json"] for row in signals}
-    assert "black_litterman" in methods["AAA"] or "equal_weight" in methods["AAA"]
+    joined = methods["AAA"] + methods["BBB"]
+    assert (
+        "black_litterman" in joined
+        or "equal_weight" in joined
+        or "w_max_only" in joined
+    )

@@ -38,6 +38,67 @@ def test_kalman_trend_on_uptrend():
     assert tstat > 0
 
 
+def test_kalman_incremental_matches_full():
+    """P2-1: resume state theo ticker tương đương expanding filter full."""
+    close = _synthetic_close(drift=0.001, seed=7)
+    log_px = np.log(close)
+    # Full đến n-1 rồi 1 bước → so với full n.
+    n = len(log_px)
+    *_, state = fit_kalman_trend(log_px.iloc[: n - 1], return_state=True)
+    _l1, s1, v1 = fit_kalman_trend(log_px, init_state=state)
+    _l0, s0, v0 = fit_kalman_trend(log_px)
+    assert float(s1.iloc[-1]) == pytest.approx(float(s0.iloc[-1]), rel=1e-9, abs=1e-12)
+    assert float(v1.iloc[-1]) == pytest.approx(float(v0.iloc[-1]), rel=1e-9, abs=1e-12)
+
+
+def test_kalman_cache_keyed_by_ticker_not_n_returns():
+    """P2-1: kalman_cache trong generate_signals key theo ticker."""
+    from quant_engine import signal_engine as se
+
+    idx = pd.bdate_range("2023-01-02", periods=60).strftime("%Y-%m-%d")
+    aaa = pd.Series(
+        100 + np.cumsum(np.random.default_rng(0).normal(0, 1, 60)),
+        index=list(idx),
+    )
+    vni = pd.Series(
+        1000 + np.cumsum(np.random.default_rng(1).normal(0, 1, 60)),
+        index=list(idx),
+    )
+    cfg = {
+        "quant_engine": {
+            "benchmark": "VNINDEX",
+            "regime_markov": {"enabled": False},
+            "alpha_kalman_trend": {"enabled": True},
+            "alpha_ou_meanreversion": {"enabled": False},
+            "risk_garch": {"enabled": False},
+        }
+    }
+    cache: dict = {}
+    # Giống backtest: truncate closes ≤ as_of rồi gọi lại ngày sau.
+    cut1 = { "AAA": aaa.iloc[:58], "VNINDEX": vni.iloc[:58] }
+    se.generate_signals(
+        cut1,
+        as_of_date=idx[57],
+        signal_tickers=["AAA"],
+        config=cfg,
+        kalman_cache=cache,
+    )
+    assert "AAA" in cache
+    assert set(cache.keys()) == {"AAA"}
+    n_before = int(cache["AAA"]["n"])
+    cut2 = { "AAA": aaa.iloc[:59], "VNINDEX": vni.iloc[:59] }
+    se.generate_signals(
+        cut2,
+        as_of_date=idx[58],
+        signal_tickers=["AAA"],
+        config=cfg,
+        kalman_cache=cache,
+    )
+    # Expanding +1 quan sát; vẫn một key ticker (không nhân theo n_returns).
+    assert set(cache.keys()) == {"AAA"}
+    assert int(cache["AAA"]["n"]) == n_before + 1
+
+
 def test_ou_half_life():
     assert ou_half_life(math.log(2)) == pytest.approx(1.0)
     with pytest.raises(ValueError):

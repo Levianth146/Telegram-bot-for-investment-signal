@@ -11,6 +11,11 @@ from typing import Any, Mapping
 
 import pandas as pd
 
+from fundamental_filter.layer1_engine.eligibility import (
+    build_data_quality_payload,
+    is_quant_eligible_fundamental,
+)
+
 
 _SCORE_COLUMNS = (
     "growth_score",
@@ -154,6 +159,10 @@ def _headline_json(
     }
     if "classification_flags" in row.index and pd.notna(row.get("classification_flags")):
         payload["flags"] = str(row["classification_flags"])
+    # Diagnostic thiếu dữ liệu — chỉ khi pipeline biết chắc (không bịa metric list).
+    dq = build_data_quality_payload(row)
+    if dq:
+        payload["data_quality"] = dq
     return json.dumps(payload, ensure_ascii=False)
 
 
@@ -229,7 +238,8 @@ def to_store_records(
             score_row[col] = None if pd.isna(value) else float(value)
         scores.append(score_row)
 
-        if view in {"PASS", "WATCH"}:
+        # Vẫn persist mọi score (kể cả INSUFFICIENT/FAIL); watchlist chỉ Quant-eligible.
+        if is_quant_eligible_fundamental(score_row):
             watchlist.append(
                 {
                     "as_of_date": row_as_of,

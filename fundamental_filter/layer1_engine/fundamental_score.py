@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 
 from .fundamental_config import FUNDAMENTAL_MODULE_WEIGHTS
+from .scoring_utils import safe_print
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -214,27 +215,32 @@ def run_fundamental_score(
     if persist:
         result_df.to_csv(output_file, index=False, encoding="utf-8-sig")
 
-    printed_df = result_df.copy()
-    printed_df["missing_modules"] = printed_df["missing_modules"].replace("", "none")
-    print(printed_df.to_string(index=False))
-
-    print("\nSUMMARY")
-    print(f"Growth Score: {row['growth_score']:.6f}")
-    print(f"Quality Score: {row['quality_score']:.6f}")
-    print(f"Safety Score: {row['safety_score']:.6f}")
-    print(f"Valuation Score: {row['valuation_score']:.6f}")
-    print(
-        f"Fundamental Score: {fundamental_score:.6f}"
-        if not pd.isna(fundamental_score)
-        else "Fundamental Score: NaN"
-    )
-    print(
-        "All four modules available: "
-        + ("yes" if available_module_count == 4 else "no")
-    )
-    print("Safety Gate is diagnostic; classification is computed downstream.")
+    # persist=False = đường batch/backtest: không dump bảng (spam + crash cp1252).
     if persist:
-        print(f"Saved to: {output_file.name}")
+        printed_df = result_df.copy()
+        printed_df["missing_modules"] = printed_df["missing_modules"].replace(
+            "", "none"
+        )
+        safe_print(printed_df.to_string(index=False))
+
+        safe_print("\nSUMMARY")
+        safe_print(f"Growth Score: {row['growth_score']:.6f}")
+        safe_print(f"Quality Score: {row['quality_score']:.6f}")
+        safe_print(f"Safety Score: {row['safety_score']:.6f}")
+        safe_print(f"Valuation Score: {row['valuation_score']:.6f}")
+        safe_print(
+            f"Fundamental Score: {fundamental_score:.6f}"
+            if not pd.isna(fundamental_score)
+            else "Fundamental Score: NaN"
+        )
+        safe_print(
+            "All four modules available: "
+            + ("yes" if available_module_count == 4 else "no")
+        )
+        safe_print(
+            "Safety Gate is diagnostic; classification is computed downstream."
+        )
+        safe_print(f"Saved to: {output_file.name}")
 
     return result_df
 

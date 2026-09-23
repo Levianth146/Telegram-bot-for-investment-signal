@@ -671,6 +671,8 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
 
     _safe_print("framework stack (regime+alpha+risk) with warmup history...")
     fw_cfg = _set_quant_flags(config, regime=True, alpha=True, risk=True)
+    # P2-2: signal_tickers=None → engine dùng watchlist Tầng 1 động (khớp live).
+    # B0/B1/B2 phía trên vẫn dùng signal_closes (toàn universe) cố ý.
     fw_full_raw = run_backtest(
         fw_cfg,
         hist_start,
@@ -678,7 +680,7 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
         close_by_ticker=closes,
         scoring_schedule=scoring_schedule,
         signal_every_n_days=max(int(args.signal_every), 1),
-        signal_tickers=list(signal_closes),
+        signal_tickers=None,
     )
     fw_oos = _slice_equity_to_oos(fw_full_raw, oos_start, oos_end)
     fw_oos["metrics"] = compute_metrics(
@@ -694,6 +696,7 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
     fw_col_source = fw_full
     if use_wf:
         _safe_print("walk_forward OOS (framework)...")
+        # P2-2: signal_tickers=None → watchlist Tầng 1 động (khớp live).
         wf = run_walk_forward(
             fw_cfg,
             hist_start,
@@ -701,7 +704,7 @@ def _main_impl(args: argparse.Namespace, root: Path) -> int:
             close_by_ticker=closes,
             scoring_schedule=scoring_schedule,
             signal_every_n_days=max(int(args.signal_every), 1),
-            signal_tickers=list(signal_closes),
+            signal_tickers=None,
         )
         fold_meta = {
             "n_folds": wf.get("n_folds"),

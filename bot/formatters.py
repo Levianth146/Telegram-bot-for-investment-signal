@@ -232,19 +232,19 @@ def map_position_action(action: Any) -> str:
 
 
 def _classification_reason(fundamental_row: Mapping[str, Any] | None) -> str:
-    if not fundamental_row:
-        return ""
-    payload = _headline_payload(fundamental_row)
-    raw = payload.get("classification_reason") or ""
-    if isinstance(raw, list):
-        return " | ".join(str(x) for x in raw if x)
-    return str(raw or "").strip()
+    from fundamental_filter.layer1_engine.eligibility import parse_classification_reason
+
+    return parse_classification_reason(fundamental_row)
 
 
 def is_insufficient_fundamental(fundamental_row: Mapping[str, Any] | None) -> bool:
-    """True khi Layer 1 ghi thiếu dữ liệu (không đồng nhất với FAIL)."""
-    reason = _classification_reason(fundamental_row).upper()
-    return "INSUFFICIENT" in reason
+    """True khi Layer 1 ghi thiếu dữ liệu (không đồng nhất với FAIL).
+
+    Delegate sang domain eligibility — một định nghĩa dùng chung bot/pipeline.
+    """
+    from fundamental_filter.layer1_engine.eligibility import is_fundamental_insufficient
+
+    return is_fundamental_insufficient(fundamental_row)
 
 
 def _rsi_gloss(rsi: float) -> str:
@@ -494,14 +494,73 @@ def format_help() -> str:
     )
 
 
+# Phân trang /signals — tối đa 10 đáng chú ý + 10 theo dõi mỗi trang (Phần C).
+SIGNALS_PAGE_SIZE_NOTABLE = 10
+SIGNALS_PAGE_SIZE_WATCH = 10
+SIGNALS_PAGE_SIZE_SELL = 10
+
+
+def _normalise_signal_rows(signal_rows: list[dict]) -> list[dict]:
+    """Cap action theo fundamental_view (WATCH fund không hiện như MUA)."""
+    normalised: list[dict] = []
+    for row in signal_rows:
+        item = dict(row)
+        item["action"] = cap_action_for_fundamental(
+            row.get("action"), row.get("fundamental_view")
+        )
+        normalised.append(item)
+    return normalised
+
+
+def _signals_by_action(normalised: list[dict]) -> dict[str, list[dict]]:
+    """Nhóm BUY/WATCH/SELL, sort |score| giảm dần trong từng nhóm."""
+    order = ("BUY", "WATCH", "SELL")
+    by_action: dict[str, list[dict]] = {k: [] for k in order}
+    for row in normalised:
+        act = str(row.get("action") or "?").upper()
+        if act in by_action:
+            by_action[act].append(row)
+
+    def _strength_key(row: dict) -> float:
+        try:
+            return abs(float(row.get("score")))
+        except (TypeError, ValueError):
+            return -1.0
+
+    for act in order:
+        by_action[act] = sorted(by_action[act], key=_strength_key, reverse=True)
+    return by_action
+
+
+def signals_total_pages(signal_rows: list[dict]) -> int:
+    """Số trang /signals (1 khi rỗng hoặc đủ ngắn cho 1 trang)."""
+    if not signal_rows:
+        return 1
+    by_action = _signals_by_action(_normalise_signal_rows(signal_rows))
+    n_buy = len(by_action["BUY"])
+    n_watch = len(by_action["WATCH"])
+    n_sell = len(by_action["SELL"])
+    pages = max(
+        1,
+        (n_buy + SIGNALS_PAGE_SIZE_NOTABLE - 1) // SIGNALS_PAGE_SIZE_NOTABLE,
+        (n_watch + SIGNALS_PAGE_SIZE_WATCH - 1) // SIGNALS_PAGE_SIZE_WATCH,
+        (n_sell + SIGNALS_PAGE_SIZE_SELL - 1) // SIGNALS_PAGE_SIZE_SELL,
+    )
+    return pages
+
+
 def format_signals_list(
     signal_rows: list[dict],
     *,
     w_max: float = 0.10,
+    page: int | None = None,
 ) -> str:
     """/signals — nhóm theo độ mạnh (ban_phac §4), không alphabet-first.
 
     Size hiển thị = GARCH position_size (≠ equal-weight / BL).
+
+    ``page``: 0-based; ``None`` = in hết (tương thích test/chunk dài).
+    Bot dùng ``page=0`` (+ nút phân trang) theo Phần C UX.
     """
     if not signal_rows:
         return (
@@ -523,21 +582,21 @@ def format_signals_list(
         p_vals_sorted = sorted(p_vals)
         p_shared = p_vals_sorted[len(p_vals_sorted) // 2]
 
-    # Cap hiển thị: WATCH Fundamental không hiện như MUA.
-    normalised: list[dict] = []
-    for row in signal_rows:
-        item = dict(row)
-        item["action"] = cap_action_for_fundamental(
-            row.get("action"), row.get("fundamental_view")
-        )
-        normalised.append(item)
+    normalised = _normalise_signal_rows(signal_rows)
+    by_action = _signals_by_action(normalised)
 
-    n_buy = sum(1 for r in normalised if str(r.get("action")).upper() == "BUY")
-    n_sell = sum(1 for r in normalised if str(r.get("action")).upper() == "SELL")
-    n_watch = sum(1 for r in normalised if str(r.get("action")).upper() == "WATCH")
+    n_buy = len(by_action["BUY"])
+    n_sell = len(by_action["SELL"])
+    n_watch = len(by_action["WATCH"])
     n_at_cap = sum(
         1 for r in normalised if size_hits_w_max(r.get("size"), w_max)
     )
+
+    total_pages = signals_total_pages(signal_rows)
+    use_page = page is not None
+    page_i = 0
+    if use_page:
+        page_i = max(0, min(int(page), total_pages - 1))
 
     lines = [
         f"📋 Tín hiệu phiên gần nhất{f' · {day}' if day else ''}",
@@ -545,6 +604,9 @@ def format_signals_list(
         f"Tóm tắt: Đáng chú ý {n_buy} · Theo dõi {n_watch} · Tránh mua mới {n_sell}",
         "",
     ]
+    if use_page and total_pages > 1:
+        lines.append(f"Trang {page_i + 1}/{total_pages} (tối đa 10 mã/nhóm).")
+        lines.append("")
     if p_shared is not None:
         pct = f"{float(p_shared) * 100:.0f}%"
         lines.append(
@@ -571,26 +633,23 @@ def format_signals_list(
         "WATCH": "🟡 Theo dõi",
         "SELL": "🔴 Tránh mua mới",
     }
-    by_action: dict[str, list[dict]] = {k: [] for k in order}
-    other: list[dict] = []
-    for row in normalised:
-        act = str(row.get("action") or "?").upper()
-        if act in by_action:
-            by_action[act].append(row)
-        else:
-            other.append(row)
-
-    def _strength_key(row: dict) -> float:
-        try:
-            return abs(float(row.get("score")))
-        except (TypeError, ValueError):
-            return -1.0
+    page_sizes = {
+        "BUY": SIGNALS_PAGE_SIZE_NOTABLE,
+        "WATCH": SIGNALS_PAGE_SIZE_WATCH,
+        "SELL": SIGNALS_PAGE_SIZE_SELL,
+    }
 
     for act in order:
-        rows = sorted(by_action[act], key=_strength_key, reverse=True)
+        rows = by_action[act]
         if not rows:
             continue
-        lines.append(f"── {headers[act]} ({len(rows)}) ──")
+        if use_page:
+            size = page_sizes[act]
+            start = page_i * size
+            rows = rows[start : start + size]
+            if not rows:
+                continue
+        lines.append(f"── {headers[act]} ({len(by_action[act])}) ──")
         for row in rows:
             size_txt = format_size_with_cap(row.get("size"), w_max=w_max)
             ticker = row.get("ticker")
@@ -602,11 +661,17 @@ def format_signals_list(
             lines.append(f"  → Chi tiết: /check {ticker}")
         lines.append("")
 
-    for row in other:
-        lines.append(
-            f"• {row.get('action')} — {row.get('ticker')} | "
-            f"điểm {_fmt_num(row.get('score'))} → /check {row.get('ticker')}"
-        )
+    # Các action lạ (không BUY/WATCH/SELL) — chỉ khi không phân trang.
+    if not use_page:
+        known = set(order)
+        for row in normalised:
+            act = str(row.get("action") or "?").upper()
+            if act in known:
+                continue
+            lines.append(
+                f"• {row.get('action')} — {row.get('ticker')} | "
+                f"điểm {_fmt_num(row.get('score'))} → /check {row.get('ticker')}"
+            )
 
     lines.extend(
         [
@@ -896,9 +961,15 @@ def _fundamental_pillars_block(fundamental_row: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def format_check_out_of_scope(ticker: str, *, meta: Mapping[str, Any] | None = None) -> str:
+def format_check_out_of_scope(
+    ticker: str,
+    *,
+    meta: Mapping[str, Any] | None = None,
+    ta_indicators: dict | None = None,
+) -> str:
     """OUT_OF_SCOPE — ngoài universe cấu hình; không bảo «đợi sau 15:00»."""
     t = ticker.strip().upper()
+    meta = dict(meta or {})
     lines = _check_header(t, meta)
     lines.extend(
         [
@@ -907,6 +978,15 @@ def format_check_out_of_scope(ticker: str, *, meta: Mapping[str, Any] | None = N
             f"Câu chuyện ngắn: {t} không nằm trong universe cấu hình (CSV Tầng 1).",
             "Bot không chấm Fundamental/Quant cho mã ngoài phạm vi — "
             "đây không phải lỗi «chưa chạy daily» và không cần đợi phiên.",
+        ]
+    )
+    if meta.get("store_has_price") is False and meta.get("last_close") is None:
+        lines.append("Store hiện chưa có dữ liệu giá cho mã này.")
+    ta_block = format_ta_reference_block(ta_indicators or {})
+    if ta_block:
+        lines.extend(["", ta_block])
+    lines.extend(
+        [
             "",
             "Xem mã đang hỗ trợ: /watchlist · /signals",
             "",
@@ -1150,11 +1230,22 @@ def format_check_position_aware(
         ]
     )
     if fundamental_row:
+        base_note = translate_fundamental_view(view)
+        if is_insufficient_fundamental(fundamental_row):
+            base_note = (
+                "Chưa đủ dữ liệu Layer 1 đáng tin "
+                f"(reason: {_classification_reason(fundamental_row) or '—'})"
+            )
+        elif str(view or "").upper() == "FAIL":
+            base_note = (
+                f"{translate_fundamental_view('FAIL')} — "
+                "không còn trong Quant universe (vị thế giấy vẫn hiển thị)."
+            )
         lines.extend(
             [
                 "",
-                "④ Fundamental (tóm tắt)",
-                f"{translate_fundamental_view(view)}",
+                "④ Fundamental (base Layer 1)",
+                base_note,
             ]
         )
     ta_block = format_ta_reference_block(ta_indicators or {})
@@ -1173,18 +1264,15 @@ def format_check_position_aware(
     return "\n".join(lines)
 
 
-def resolve_check_state(
+def resolve_base_check_state(
     *,
     in_universe: bool | None,
     is_financial: bool,
     exclude_financials: bool,
     fund: Mapping[str, Any] | None,
     signal: Mapping[str, Any] | None,
-    has_open_position: bool,
 ) -> str:
-    """State machine store-only cho /check (ban_phac §5–6)."""
-    if has_open_position:
-        return CHECK_POSITION
+    """Base research state (không overlay vị thế) — ban_phac §5–6 / FLOW2."""
     if in_universe is False:
         return CHECK_OUT_OF_SCOPE
     # Tài chính V1 = EXCLUDED dù có/không hàng fund (không nhầm INSUFFICIENT).
@@ -1200,9 +1288,34 @@ def resolve_check_state(
     if view == "WATCH":
         return CHECK_WATCH
     if view == "PASS":
+        # Stale Quant không nâng PASS khi Layer 1 đã FAIL/INSUFFICIENT — đã chặn ở trên.
         return CHECK_PASS if signal else CHECK_PASS_NO_SIGNAL
     # Có hàng fund nhưng view lạ / trống → thiếu dữ liệu phân loại
     return CHECK_INSUFFICIENT
+
+
+def resolve_check_state(
+    *,
+    in_universe: bool | None,
+    is_financial: bool,
+    exclude_financials: bool,
+    fund: Mapping[str, Any] | None,
+    signal: Mapping[str, Any] | None,
+    has_open_position: bool,
+) -> str:
+    """State machine store-only cho /check (ban_phac §5–6).
+
+    Position là overlay presentation; base Layer 1 lấy qua ``resolve_base_check_state``.
+    """
+    if has_open_position:
+        return CHECK_POSITION
+    return resolve_base_check_state(
+        in_universe=in_universe,
+        is_financial=is_financial,
+        exclude_financials=exclude_financials,
+        fund=fund,
+        signal=signal,
+    )
 
 
 def format_check_by_state(
@@ -1223,7 +1336,7 @@ def format_check_by_state(
             position, signal, fund, ta_indicators=ta_indicators, meta=meta
         )
     if state == CHECK_OUT_OF_SCOPE:
-        return format_check_out_of_scope(t, meta=meta)
+        return format_check_out_of_scope(t, meta=meta, ta_indicators=ta_indicators)
     if state == CHECK_EXCLUDED_FINANCIAL:
         return format_check_excluded_financial(
             t, meta=meta, ta_indicators=ta_indicators
@@ -1515,8 +1628,8 @@ def format_backtest_results(
 
     lines.extend(
         [
-            "Ảnh kèm (khi đủ dữ liệu): đường vốn cùng OOS, sụt giảm, "
-            "Sharpe trượt, IS/OS, yearly, turnover.",
+            "Bấm nút bên dưới để xem từng view (So B0/B1/B2, theo năm, checks) — "
+            "bot chỉ đọc store, không tính lại backtest.",
             "Tiếp: /signals · /check <mã> · /chart <mã> price",
             "",
             DISCLAIMER,
@@ -1621,3 +1734,229 @@ def format_status(
         ]
     )
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Phần C — InlineKeyboard / ReplyKeyboard (chỉ điều hướng + đọc store)
+# ---------------------------------------------------------------------------
+
+# action ∈ {price, radar, ta, watch_add, pnl}; callback chk:<action>:<TICKER>
+_CHECK_ACTIONS = frozenset({"price", "radar", "ta", "watch_add", "pnl"})
+
+
+def _telegram_keyboard_imports():
+    """Import lazy — giữ formatters importable khi chưa cài python-telegram-bot."""
+    from telegram import (
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        KeyboardButton,
+        ReplyKeyboardMarkup,
+    )
+
+    return InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+
+
+def assert_callback_data_ok(data: str) -> str:
+    """Telegram giới hạn callback_data ≤ 64 byte (UTF-8)."""
+    raw = data.encode("utf-8")
+    if len(raw) > 64:
+        raise ValueError(f"callback_data vượt 64 byte ({len(raw)}): {data!r}")
+    return data
+
+
+def check_keyboard_rows(
+    state: str,
+    ticker: str,
+    *,
+    has_price_bars: bool = False,
+) -> list[list[tuple[str, str]]]:
+    """Sinh hàng nút /check theo state (C-2) — chưa bọc InlineKeyboardMarkup.
+
+    Trả về ``[[(label, callback_data), ...], ...]``.
+    """
+    t = ticker.strip().upper()
+    rows: list[list[tuple[str, str]]] = []
+    row: list[tuple[str, str]] = []
+
+    def _add(label: str, action: str) -> None:
+        cb = assert_callback_data_ok(f"chk:{action}:{t}")
+        row.append((label, cb))
+
+    if state == CHECK_POSITION:
+        _add("📉 Xem P/L chi tiết", "pnl")
+
+    if state in (CHECK_OUT_OF_SCOPE, CHECK_EXCLUDED_FINANCIAL, CHECK_INSUFFICIENT):
+        if has_price_bars:
+            _add("📈 TA tham khảo", "ta")
+    elif state == CHECK_FAIL:
+        _add("🎯 Radar Fundamental", "radar")
+        if has_price_bars:
+            _add("📈 TA tham khảo", "ta")
+    elif state in (
+        CHECK_WATCH,
+        CHECK_PASS_NO_SIGNAL,
+        CHECK_PASS,
+        CHECK_POSITION,
+    ):
+        if has_price_bars:
+            _add("📊 Biểu đồ giá", "price")
+        _add("🎯 Radar Fundamental", "radar")
+        if has_price_bars:
+            _add("📈 TA tham khảo", "ta")
+        _add("⭐ Theo dõi mã này", "watch_add")
+
+    if row:
+        # Telegram: tối đa ~8 nút/hàng; tách 2 hàng nếu dài.
+        if len(row) <= 3:
+            rows.append(row)
+        else:
+            rows.append(row[:2])
+            rows.append(row[2:])
+    return rows
+
+
+def build_check_keyboard(
+    state: str,
+    ticker: str,
+    *,
+    has_price_bars: bool = False,
+):
+    """InlineKeyboard dưới kết quả /check — không đổi ``resolve_check_state``."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    spec = check_keyboard_rows(state, ticker, has_price_bars=has_price_bars)
+    if not spec:
+        return None
+    return InlineKeyboardMarkup(
+        [
+            [InlineKeyboardButton(text=lab, callback_data=cb) for lab, cb in r]
+            for r in spec
+        ]
+    )
+
+
+def build_signals_keyboard(page: int, total_pages: int):
+    """Nút ◀ / Trang X/Y / ▶ — ``page:signals:<n>`` (0-based)."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    if total_pages <= 1:
+        return None
+    page_i = max(0, min(int(page), total_pages - 1))
+    row = []
+    if page_i > 0:
+        row.append(
+            InlineKeyboardButton(
+                "◀ Trước",
+                callback_data=assert_callback_data_ok(f"page:signals:{page_i - 1}"),
+            )
+        )
+    row.append(
+        InlineKeyboardButton(
+            f"Trang {page_i + 1}/{total_pages}",
+            callback_data=assert_callback_data_ok(f"page:signals:{page_i}"),
+        )
+    )
+    if page_i < total_pages - 1:
+        row.append(
+            InlineKeyboardButton(
+                "Tiếp ▶",
+                callback_data=assert_callback_data_ok(f"page:signals:{page_i + 1}"),
+            )
+        )
+    return InlineKeyboardMarkup([row])
+
+
+def build_backtest_keyboard(run_id: str):
+    """View switcher /backtest — ``bt:<view>:<run_id>``; chỉ đọc store khi bấm."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    rid = str(run_id or "latest")[:40]
+    views = (
+        ("So B0", "b0"),
+        ("So B1", "b1"),
+        ("So B2", "b2"),
+        ("Theo năm", "yearly"),
+        ("Bảng checks", "checks"),
+    )
+    buttons = []
+    for label, view in views:
+        cb = assert_callback_data_ok(f"bt:{view}:{rid}")
+        buttons.append(InlineKeyboardButton(label, callback_data=cb))
+    # 3 + 2 hàng cho dễ bấm trên mobile
+    return InlineKeyboardMarkup([buttons[:3], buttons[3:]])
+
+
+def build_regime_keyboard():
+    """Nút điều hướng /regime → logic /signals."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "Xem theo từng mã →",
+                    callback_data=assert_callback_data_ok("nav:signals"),
+                )
+            ]
+        ]
+    )
+
+
+def build_start_reply_keyboard():
+    """ReplyKeyboard cố định cho /start — điền lệnh vào ô chat."""
+    _, _, KeyboardButton, ReplyKeyboardMarkup = _telegram_keyboard_imports()
+    return ReplyKeyboardMarkup(
+        [
+            [
+                KeyboardButton("/check"),
+                KeyboardButton("/signals"),
+                KeyboardButton("/regime"),
+                KeyboardButton("/positions"),
+            ]
+        ],
+        resize_keyboard=True,
+        one_time_keyboard=False,
+    )
+
+
+def format_backtest_checks_only(
+    checks: list[dict] | None,
+    *,
+    scope: str,
+    run_id: str,
+) -> str:
+    """Text-only bảng checks khi bấm nút bt:checks (không tính lại backtest)."""
+    lines = [
+        f"📋 Checks đã đăng ký · {scope} · {run_id}",
+        "",
+    ]
+    if not checks:
+        lines.append("Chưa có check nào trong store cho lần chạy này.")
+    else:
+        for chk in checks:
+            mark = "✅" if int(chk.get("passed") or 0) else "❌"
+            name = chk.get("check_name") or "?"
+            lines.append(
+                f"{mark} {name}: thực tế {_fmt_num(chk.get('actual_value'))} · "
+                f"ngưỡng {_fmt_num(chk.get('threshold'))}"
+            )
+            note = chk.get("note")
+            if note:
+                lines.append(f"   → {note}")
+    lines.extend(["", DISCLAIMER])
+    return "\n".join(lines)
+
+
+def format_watch_add_ack(ticker: str, *, on_system_watchlist: bool) -> str:
+    """Phản hồi nút watch_add — chỉ đọc store, không ghi pipeline watchlist."""
+    t = ticker.strip().upper()
+    if on_system_watchlist:
+        body = (
+            f"✓ {t} đang trong rổ theo dõi hệ thống (sau lọc quý).\n"
+            f"Xem: /watchlist · /check {t}"
+        )
+    else:
+        body = (
+            f"ℹ {t} chưa có trong rổ lọc quý của hệ thống.\n"
+            f"Bot không thêm mã vào pipeline khi bấm nút "
+            "(chỉ đọc store).\n"
+            f"Tiếp: /watchlist · /check {t} · /subscribe"
+        )
+    return f"{body}\n\n{DISCLAIMER}"
+

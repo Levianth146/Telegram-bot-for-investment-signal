@@ -40,8 +40,19 @@ def test_daily_job_run_with_synthetic_closes(tmp_path):
                 "safety_score": 60.0,
                 "valuation_score": 55.0,
                 "fundamental_view": "PASS",
-                "headline_json": "{}",
-            }
+                "headline_json": '{"classification_reason": "PASS_THRESHOLDS_MET"}',
+            },
+            {
+                "ticker": "BBB",
+                "filed_at": "2024-03-31",
+                "period": "2023",
+                "growth_score": 55.0,
+                "quality_score": 50.0,
+                "safety_score": 48.0,
+                "valuation_score": 45.0,
+                "fundamental_view": "WATCH",
+                "headline_json": '{"classification_reason": "MODULE_FLOOR_NOT_MET"}',
+            },
         ],
     )
     conn.close()
@@ -81,6 +92,53 @@ def test_daily_job_run_with_synthetic_closes(tmp_path):
     assert len(stored) == 2
     assert {r["ticker"] for r in stored} == {"AAA", "BBB"}
     assert len(closes_aaa) >= 2
+
+
+def test_daily_job_defensive_gate_drops_insufficient(tmp_path):
+    """Stale watchlist BAD (INSUFFICIENT) bị drop; GOOD WATCH đủ data được giữ."""
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    as_of = "2024-06-28"
+    repository.upsert_watchlist(
+        conn,
+        [
+            {"as_of_date": as_of, "ticker": "BAD", "fundamental_view": "WATCH"},
+            {"as_of_date": as_of, "ticker": "GOOD", "fundamental_view": "WATCH"},
+        ],
+    )
+    repository.upsert_fundamental_scores(
+        conn,
+        [
+            {
+                "ticker": "BAD",
+                "filed_at": "2024-03-31",
+                "period": "2023",
+                "growth_score": 40.0,
+                "quality_score": 40.0,
+                "safety_score": 40.0,
+                "valuation_score": 40.0,
+                "fundamental_view": "WATCH",
+                "headline_json": '{"classification_reason": "INSUFFICIENT_DATA"}',
+            },
+            {
+                "ticker": "GOOD",
+                "filed_at": "2024-03-31",
+                "period": "2023",
+                "growth_score": 55.0,
+                "quality_score": 50.0,
+                "safety_score": 48.0,
+                "valuation_score": 45.0,
+                "fundamental_view": "WATCH",
+                "headline_json": '{"classification_reason": "MODULE_FLOOR_NOT_MET"}',
+            },
+        ],
+    )
+    conn.close()
+
+    kept = daily_job.load_watchlist_tickers(str(db), as_of)
+    assert kept == ["GOOD"]
+    assert "BAD" not in kept
 
 
 def test_backfill_from_store_uses_price_bars(tmp_path):

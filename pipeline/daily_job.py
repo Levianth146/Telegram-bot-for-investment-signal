@@ -53,12 +53,38 @@ def load_watchlist_tickers(
     *,
     config: dict | None = None,
 ) -> list[str]:
+    """Đọc watchlist rồi lọc defensive theo eligibility Layer 1 (DB cũ có thể stale)."""
+    from fundamental_filter.layer1_engine.eligibility import (
+        is_quant_eligible_fundamental,
+    )
+
     conn = repository.get_connection(db_path)
     try:
         repository.init_schema(conn)
         tickers = repository.get_watchlist(conn, as_of_date)
+        fund_by_ticker = repository.get_latest_fundamental_scores(conn, tickers or None)
     finally:
         conn.close()
+
+    if tickers:
+        kept: list[str] = []
+        dropped: list[str] = []
+        for ticker in tickers:
+            key = str(ticker).strip().upper()
+            fund = fund_by_ticker.get(key)
+            if is_quant_eligible_fundamental(fund):
+                kept.append(key)
+            else:
+                dropped.append(key)
+        if dropped:
+            print(
+                "daily_job: dropped "
+                f"{len(dropped)} non-eligible fundamental tickers: "
+                f"{', '.join(dropped)}",
+                flush=True,
+            )
+        tickers = kept
+
     if not config:
         return tickers
     from data.universe import filter_tickers_for_config

@@ -1,0 +1,15 @@
+\U0001f4e6 Vnstock 4.0.8 is available
+Current: 4.0.7 (Python 3.12)
+Update: pip install vnstock --upgrade
+Release: https://vnstocks.com/docs/tai-lieu/lich-su-phien-ban
+\U0001f4e6 Vnai 2.6.1 is available
+Current: 2.5.9 (Python 3.12)
+Update: pip install vnai --upgrade
+Release: https://pypi.org/project/vnai/#history
+provider vnstock.get_ohlcv failed: RetryError[<Future at 0x224f08497f0 state=finished raised ValueError>]
+OHLCV skip TCX: all providers failed for get_ohlcv: dnse: not implemented (DNSE multi-year OHLCV+volume not wired — use vnstock in price chain); vnstock: RetryError[<Future at 0x224f08497f0 state=finished raised ValueError>]; cafef: not implemented (CafeF OHLCV scrape not implemented yet)
+provider vnstock.get_ohlcv failed: RetryError[<Future at 0x224ff849ee0 state=finished raised ValueError>]
+OHLCV skip VCK: all providers failed for get_ohlcv: dnse: not implemented (DNSE multi-year OHLCV+volume not wired — use vnstock in price chain); vnstock: RetryError[<Future at 0x224ff849ee0 state=finished raised ValueError>]; cafef: not implemented (CafeF OHLCV scrape not implemented yet)
+provider vnstock.get_ohlcv failed: RetryError[<Future at 0x224ff84a9c0 state=finished raised ValueError>]
+OHLCV skip VPX: all providers failed for get_ohlcv: dnse: not implemented (DNSE multi-year OHLCV+volume not wired — use vnstock in price chain); vnstock: RetryError[<Future at 0x224ff84a9c0 state=finished raised ValueError>]; cafef: not implemented (CafeF OHLCV scrape not implemented yet)
+OHLCV missing 3/102 tickers: TCX,VCK,VPX

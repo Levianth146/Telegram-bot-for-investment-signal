@@ -200,6 +200,50 @@ def upsert_watchlist(conn: sqlite3.Connection, rows: list[dict]) -> None:
     conn.commit()
 
 
+def replace_watchlist_for_tickers(
+    conn: sqlite3.Connection,
+    *,
+    as_of_date: str,
+    processed_tickers: list[str],
+    eligible_rows: list[dict],
+) -> None:
+    """Batch-safe: xóa watchlist cũ của processed tickers rồi upsert eligible.
+
+    Không DELETE toàn bộ ``as_of_date`` — batch nhỏ không được đụng ticker khác.
+    """
+    tickers = sorted(
+        {
+            str(t).strip().upper()
+            for t in processed_tickers
+            if t is not None and str(t).strip()
+        }
+    )
+    if tickers:
+        placeholders = ",".join("?" for _ in tickers)
+        conn.execute(
+            f"DELETE FROM watchlist WHERE as_of_date = ? AND ticker IN ({placeholders})",
+            [as_of_date, *tickers],
+        )
+    if eligible_rows:
+        sql = """
+            INSERT INTO watchlist (as_of_date, ticker, fundamental_view)
+            VALUES (:as_of_date, :ticker, :fundamental_view)
+            ON CONFLICT(as_of_date, ticker) DO UPDATE SET
+                fundamental_view=excluded.fundamental_view
+        """
+        # Đảm bảo as_of_date thống nhất
+        normalized = []
+        for row in eligible_rows:
+            item = dict(row)
+            item["as_of_date"] = as_of_date
+            item["ticker"] = str(item.get("ticker") or "").strip().upper()
+            if item["ticker"]:
+                normalized.append(item)
+        if normalized:
+            conn.executemany(sql, normalized)
+    conn.commit()
+
+
 def get_watchlist(conn: sqlite3.Connection, as_of_date: str | None = None) -> list[str]:
     if as_of_date is None:
         row = conn.execute(

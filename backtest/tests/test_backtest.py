@@ -1160,9 +1160,9 @@ def test_garch_same_day_memo(monkeypatch):
     fits = {"n": 0}
     real = se.fit_or_fallback_sigma
 
-    def counting(returns, window=20):
+    def counting(returns, window=20, **kwargs):
         fits["n"] += 1
-        return real(returns, window=window)
+        return real(returns, window=window, **kwargs)
 
     monkeypatch.setattr(se, "fit_or_fallback_sigma", counting)
 
@@ -1201,3 +1201,11 @@ def test_garch_same_day_memo(monkeypatch):
         garch_cache=cache,
     )
     assert fits["n"] == n1  # same-day memo hit
+
+
+def test_garch_refit_every_n_stub_still_fits():
+    """P2-1: refit_every_n set vẫn luôn fit (stub) — không đổi semantics."""
+    from quant_engine.risk.garch import should_refit_garch
+
+    assert should_refit_garch(days_since_fit=0, refit_every_n=None) is True
+    assert should_refit_garch(days_since_fit=100, refit_every_n=5) is True

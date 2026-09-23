@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import datetime, timezone
+import os
 from typing import Any, Mapping
 
 import pandas as pd
@@ -254,8 +255,19 @@ def run_backtest(
     # Map ngày → vị trí trên calendar (prev_price O(1) thay vì scan list).
     day_pos = {d: i for i, d in enumerate(calendar)}
     # Regime + GARCH same-day memo trong một run (không đổi daily→weekly).
+    # Kalman memo theo ticker (P2-1 incremental — không key n_returns).
     regime_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
     garch_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
+    kalman_memo: dict[str, Any] = {}
+    # Profile hot path: BACKTEST_PROFILE=1 → cộng dồn giây regime/kalman/garch.
+    _profile = str(os.environ.get("BACKTEST_PROFILE", "")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+    }
+    perf_timings: dict[str, float] | None = (
+        {"regime": 0.0, "kalman": 0.0, "garch": 0.0} if _profile else None
+    )
 
     cash = float(initial_equity)
     # ticker -> {qty_value at entry, entry_price, stop, entry_date, shares}
@@ -447,6 +459,8 @@ def run_backtest(
                     signal_tickers=emit,
                     regime_cache=regime_memo,
                     garch_cache=garch_memo,
+                    kalman_cache=kalman_memo,
+                    perf_timings=perf_timings,
                 )
                 all_signals.extend(day_signals)
                 for row in day_signals:
@@ -490,6 +504,16 @@ def run_backtest(
         regime_by_date=regime_by_date,
         force_research_metrics=True,
     )
+    if perf_timings is not None:
+        total = sum(float(v) for v in perf_timings.values()) or 1.0
+        parts = ", ".join(
+            f"{k}={v:.2f}s({100.0 * v / total:.0f}%)"
+            for k, v in sorted(perf_timings.items(), key=lambda kv: -kv[1])
+        )
+        print(
+            f"BACKTEST_PROFILE signal_hotpath total={total:.2f}s | {parts}",
+            flush=True,
+        )
     return {
         "equity_curve": equity_curve,
         "trades": trades,
@@ -497,6 +521,7 @@ def run_backtest(
         "signals": all_signals,
         "start_date": start_date,
         "end_date": end_date,
+        "perf_timings": perf_timings,
     }
 
 

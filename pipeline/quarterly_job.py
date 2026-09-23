@@ -86,7 +86,24 @@ def run(
         try:
             repository.init_schema(conn)
             repository.upsert_fundamental_scores(conn, records["fundamental_scores"])
-            repository.upsert_watchlist(conn, records["watchlist"])
+            # Stale-safe: ticker vừa score mà không còn eligible → xóa khỏi watchlist.
+            processed = [
+                str(r.get("ticker") or "").strip().upper()
+                for r in records["fundamental_scores"]
+                if r.get("ticker")
+            ]
+            as_of = filed
+            if records["watchlist"]:
+                as_of = str(records["watchlist"][0].get("as_of_date") or filed)
+            elif records["fundamental_scores"]:
+                # Không có eligible — vẫn cần replace để gỡ stale
+                as_of = filed
+            repository.replace_watchlist_for_tickers(
+                conn,
+                as_of_date=as_of,
+                processed_tickers=processed,
+                eligible_rows=records["watchlist"],
+            )
         finally:
             conn.close()
 

@@ -57,17 +57,29 @@ def chunk_telegram_text(text: str, limit: int = TELEGRAM_TEXT_LIMIT) -> list[str
     return chunks
 
 
-async def reply_text_safe(update: Any, text: str, *, limit: int = TELEGRAM_TEXT_LIMIT) -> None:
+async def reply_text_safe(
+    update: Any,
+    text: str,
+    *,
+    limit: int = TELEGRAM_TEXT_LIMIT,
+    reply_markup: Any = None,
+) -> None:
     """Gửi ``text`` qua ``update.message.reply_text``, chia chunk nếu cần.
 
-    Nếu ``update.message`` là None (một số loại Update không có message) thì bỏ qua và log.
+    ``reply_markup`` (nếu có) gắn vào chunk cuối. Nếu ``update.message`` là None
+    thì bỏ qua và log.
     """
     message = getattr(update, "message", None)
     if message is None:
         logger.warning("reply_text_safe: update.message is None — bỏ qua gửi tin")
         return
-    for part in chunk_telegram_text(text, limit=limit):
-        await message.reply_text(part)
+    parts = chunk_telegram_text(text, limit=limit)
+    last = len(parts) - 1
+    for i, part in enumerate(parts):
+        kwargs: dict[str, Any] = {}
+        if reply_markup is not None and i == last:
+            kwargs["reply_markup"] = reply_markup
+        await message.reply_text(part, **kwargs)
 
 
 def _db_path() -> str:
@@ -239,9 +251,10 @@ def build_application(token: str):
     import logging
     import re
 
-    from telegram import Update
+    from telegram import InputFile, Update
     from telegram.ext import (
         Application,
+        CallbackQueryHandler,
         CommandHandler,
         ContextTypes,
         MessageHandler,
@@ -251,7 +264,11 @@ def build_application(token: str):
     log = logging.getLogger("bot.main")
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(formatters.format_welcome())
+        # ReplyKeyboard: điền lệnh thường dùng vào ô chat (không phải InlineKeyboard).
+        await update.message.reply_text(
+            formatters.format_welcome(),
+            reply_markup=formatters.build_start_reply_keyboard(),
+        )
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(formatters.format_help())
@@ -267,11 +284,39 @@ def build_application(token: str):
             + formatters.DISCLAIMER
         )
 
-    async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _send_signals_page(
+        *,
+        reply_target: Any,
+        page: int,
+        edit: bool = False,
+    ) -> None:
+        """Gửi/sửa trang /signals — chỉ đọc store, không fit model."""
         rows = read_latest_signals()
-        await reply_text_safe(
-            update, formatters.format_signals_list(rows, w_max=_load_w_max())
-        )
+        w_max = _load_w_max()
+        total = formatters.signals_total_pages(rows)
+        page_i = max(0, min(int(page), total - 1))
+        text = formatters.format_signals_list(rows, w_max=w_max, page=page_i)
+        kb = formatters.build_signals_keyboard(page_i, total)
+        if edit and hasattr(reply_target, "edit_message_text"):
+            try:
+                await reply_target.edit_message_text(text, reply_markup=kb)
+                return
+            except Exception:  # noqa: BLE001
+                log.debug("edit_message_text failed — fallback reply", exc_info=True)
+        # reply_target có thể là Update hoặc Message
+        message = getattr(reply_target, "message", None) or reply_target
+        if message is None:
+            return
+        parts = chunk_telegram_text(text)
+        last = len(parts) - 1
+        for i, part in enumerate(parts):
+            kwargs: dict[str, Any] = {}
+            if kb is not None and i == last:
+                kwargs["reply_markup"] = kb
+            await message.reply_text(part, **kwargs)
+
+    async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await _send_signals_page(reply_target=update, page=0, edit=False)
 
     async def watchlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         rows = read_watchlist()
@@ -279,7 +324,10 @@ def build_application(token: str):
 
     async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         p_bull, as_of = read_regime()
-        await update.message.reply_text(formatters.format_regime_message(p_bull, as_of))
+        await update.message.reply_text(
+            formatters.format_regime_message(p_bull, as_of),
+            reply_markup=formatters.build_regime_keyboard(),
+        )
 
     async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         from telegram import InputFile
@@ -350,7 +398,11 @@ def build_application(token: str):
             meta=meta,
             w_max=_load_w_max(),
         )
-        await update.message.reply_text(text)
+        # Nút UX (Phần C) — không đổi state machine; charts vẫn gửi tự động bên dưới.
+        check_kb = formatters.build_check_keyboard(
+            state, ticker, has_price_bars=len(closes) >= 2
+        )
+        await update.message.reply_text(text, reply_markup=check_kb)
 
         async def _send_png(path: Path, caption: str) -> None:
             with path.open("rb") as handle:
@@ -366,16 +418,34 @@ def build_application(token: str):
             formatters.CHECK_WATCH,
             formatters.CHECK_POSITION,
         }
-        price_only_states = {
+        price_ta_states = {
             formatters.CHECK_EXCLUDED_FINANCIAL,
             formatters.CHECK_INSUFFICIENT,
             formatters.CHECK_FAIL,
             formatters.CHECK_OUT_OF_SCOPE,
+            formatters.CHECK_WATCH,
+            formatters.CHECK_PASS_NO_SIGNAL,
+            formatters.CHECK_PASS,
+            formatters.CHECK_POSITION,
         }
 
-        # Pack: PASS(+WATCH/POSITION) = price → fundamental → ta → risk;
-        # EXCLUDED/INSUFF(/FAIL) = price nếu có; prob chỉ khi có MC outcomes.
-        if len(closes) >= 2 and (pass_like or state in price_only_states):
+        def _four_pillars_finite(row: dict | None) -> bool:
+            if not row:
+                return False
+            try:
+                vals = [
+                    float(row.get("growth_score")),
+                    float(row.get("quality_score")),
+                    float(row.get("safety_score")),
+                    float(row.get("valuation_score")),
+                ]
+            except (TypeError, ValueError):
+                return False
+            return all(v == v and v not in (float("inf"), float("-inf")) for v in vals)
+
+        # Pack: giá/TA cho mọi state nếu store có bars; radar khi đủ 4 trụ;
+        # risk/MC chỉ khi pass_like + Quant trong store.
+        if len(closes) >= 2 and state in price_ta_states:
             try:
                 path = render_price_chart(
                     ticker, closes, chart_dir / f"{ticker}_price.png"
@@ -388,28 +458,28 @@ def build_application(token: str):
             except ChartDataError:
                 pass
 
-        if pass_like and fund:
+        if fund and _four_pillars_finite(fund):
             try:
                 path = render_fundamental_radar_chart(
                     ticker,
-                    float(fund.get("growth_score") or float("nan")),
-                    float(fund.get("quality_score") or float("nan")),
-                    float(fund.get("safety_score") or float("nan")),
-                    float(fund.get("valuation_score") or float("nan")),
+                    float(fund.get("growth_score")),
+                    float(fund.get("quality_score")),
+                    float(fund.get("safety_score")),
+                    float(fund.get("valuation_score")),
                     chart_dir / f"{ticker}_fundamental.png",
                 )
-                await _send_png(path, f"{ticker} — radar 4 trụ cơ bản")
+                await _send_png(path, f"{ticker} — radar 4 trụ Fundamental")
             except (ChartDataError, TypeError, ValueError):
                 pass
 
-        if pass_like and len(closes) >= 20:
+        if state in price_ta_states and len(closes) >= 20:
             try:
                 path = render_ta_reference_chart(
                     ticker, list(closes), ta, chart_dir / f"{ticker}_ta.png"
                 )
                 await _send_png(
                     path,
-                    f"{ticker} — TA tham khảo (không ra tín hiệu)",
+                    f"{ticker} — TA tham khảo — không phải tín hiệu hệ thống",
                 )
             except ChartDataError:
                 pass
@@ -472,26 +542,11 @@ def build_application(token: str):
         )
 
     async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        from telegram import InputFile
-
-        from bot.charts import (
-            ChartDataError,
-            render_backtest_equity_curve_chart,
-            render_drawdown_chart,
-            render_pnl_is_os_chart,
-            render_regime_conditional_equity_chart,
-            render_rolling_sharpe_chart,
-            render_trade_pnl_histogram,
-            render_turnover_chart,
-            render_yearly_stats_chart,
-        )
-
         scope = context.args[0].strip() if context.args else "portfolio"
         conn = _conn()
         try:
             rows = repository.get_backtest_results(conn, scope)
             scopes = repository.list_backtest_scopes(conn)
-            regime_hist = repository.get_market_regime_history(conn)
             run_id_preview = str(rows[0]["run_id"]) if rows else None
             checks = (
                 repository.get_backtest_checks(
@@ -509,6 +564,13 @@ def build_application(token: str):
             )
         finally:
             conn.close()
+        # Lưu scope để callback bt:<view>:<run_id> đọc lại (không nhồi scope vào callback).
+        context.user_data["bt_scope"] = scope
+        bt_kb = None
+        if rows:
+            run_id = str(rows[0].get("run_id") or "latest")
+            context.user_data["bt_run_id"] = run_id
+            bt_kb = formatters.build_backtest_keyboard(run_id)
         await reply_text_safe(
             update,
             formatters.format_backtest_results(
@@ -518,132 +580,9 @@ def build_application(token: str):
                 checks=checks,
                 yearly=yearly,
             ),
+            reply_markup=bt_kb,
         )
-        if not rows:
-            return
-        run_id = str(rows[0].get("run_id") or "latest")
-        chart_dir = Path("store/charts")
-        dbp = _db_path()
-
-        # OOS split: ngày đầu equity framework (khi có) — không tự chọn để đẹp số.
-        split_date = None
-        fw = next((r for r in rows if r.get("baseline") == "framework"), None)
-        if fw and fw.get("equity_curve_json"):
-            try:
-                import json as _json
-
-                curve = _json.loads(str(fw["equity_curve_json"]))
-                if isinstance(curve, list) and curve:
-                    split_date = str(curve[0].get("date") or "") or None
-            except (TypeError, ValueError):
-                split_date = None
-
-        async def _send_chart(path: Path, caption: str) -> None:
-            with path.open("rb") as handle:
-                await update.message.reply_photo(
-                    photo=InputFile(handle, filename=path.name),
-                    caption=caption,
-                )
-
-        try:
-            eq_path = render_backtest_equity_curve_chart(
-                scope,
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_equity.png",
-                db_path=dbp,
-                align_to_oos=True,
-            )
-            await _send_chart(
-                eq_path,
-                f"Đường vốn cùng khung OOS · {scope} · {run_id}\n"
-                "(Nghiên cứu — không phải NAV live; rebase=1)",
-            )
-        except ChartDataError:
-            pass
-        try:
-            dd_path = render_drawdown_chart(
-                scope,
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_dd.png",
-                db_path=dbp,
-            )
-            await _send_chart(
-                dd_path,
-                f"Drawdown (framework curve) · {scope} · {run_id}",
-            )
-        except ChartDataError:
-            pass
-        try:
-            rs_path = render_rolling_sharpe_chart(
-                scope,
-                run_id,
-                out_path=chart_dir / f"backtest_{scope}_{run_id}_roll_sharpe.png",
-                db_path=dbp,
-            )
-            await _send_chart(rs_path, f"Rolling Sharpe · {scope} · {run_id}")
-        except ChartDataError:
-            pass
-        if split_date:
-            try:
-                isos = render_pnl_is_os_chart(
-                    scope,
-                    run_id,
-                    split_date,
-                    chart_dir / f"backtest_{scope}_{run_id}_isos.png",
-                    db_path=dbp,
-                )
-                await _send_chart(
-                    isos,
-                    f"IS/OS band · split={split_date} · {scope}",
-                )
-            except ChartDataError:
-                pass
-        try:
-            ypath = render_yearly_stats_chart(
-                scope,
-                "framework",
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_yearly.png",
-                db_path=dbp,
-            )
-            await _send_chart(ypath, f"Sharpe theo năm · {scope}")
-        except ChartDataError:
-            pass
-        try:
-            tpath = render_turnover_chart(
-                scope,
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_turnover.png",
-                db_path=dbp,
-            )
-            await _send_chart(tpath, f"Turnover proxy · {scope}")
-        except ChartDataError:
-            pass
-        try:
-            reg_path = render_regime_conditional_equity_chart(
-                scope,
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_regime_eq.png",
-                db_path=dbp,
-                regime_history=regime_hist or None,
-            )
-            await _send_chart(
-                reg_path,
-                f"Equity theo regime · {scope}\n"
-                "(Nền màu khi store có lịch sử p_regime nhiều phiên)",
-            )
-        except ChartDataError:
-            pass
-        try:
-            pnl_path = render_trade_pnl_histogram(
-                scope,
-                run_id,
-                chart_dir / f"backtest_{scope}_{run_id}_pnl.png",
-                db_path=dbp,
-            )
-            await _send_chart(pnl_path, f"PnL% lệnh đã đóng · {scope}")
-        except ChartDataError:
-            pass
+        # Phần C: không gửi hết ảnh 1 lần — chuyển view qua nút bt:<view>:<run_id>.
 
     async def sector_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         flags = _load_config_flags()
@@ -937,6 +876,214 @@ def build_application(token: str):
             + formatters.DISCLAIMER
         )
 
+    async def _callback_send_png(message: Any, path: Path, caption: str) -> None:
+        with path.open("rb") as handle:
+            await message.reply_photo(
+                photo=InputFile(handle, filename=path.name),
+                caption=caption,
+            )
+
+    async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        """CallbackQuery — luôn answer(); chỉ đọc store/charts, không network/pipeline."""
+        from bot.charts import (
+            ChartDataError,
+            render_backtest_equity_curve_chart,
+            render_fundamental_radar_chart,
+            render_price_chart,
+            render_ta_reference_chart,
+            render_yearly_stats_chart,
+        )
+        from bot.ta_reference import ta_indicators_from_closes
+
+        query = update.callback_query
+        if query is None:
+            return
+        # Bắt buộc answer() mọi callback — tránh icon loading treo trên client.
+        await query.answer()
+        data = (query.data or "").strip()
+        message = query.message
+        if message is None:
+            return
+
+        # --- /signals phân trang ---
+        if data.startswith("page:signals:"):
+            try:
+                page_i = int(data.split(":")[-1])
+            except ValueError:
+                page_i = 0
+            await _send_signals_page(reply_target=query, page=page_i, edit=True)
+            return
+
+        # --- /regime → /signals ---
+        if data == "nav:signals":
+            await _send_signals_page(reply_target=message, page=0, edit=False)
+            return
+
+        # --- /backtest view switcher ---
+        if data.startswith("bt:"):
+            parts = data.split(":", 2)
+            if len(parts) < 3:
+                await message.reply_text("Callback backtest không hợp lệ.")
+                return
+            view, run_id = parts[1], parts[2]
+            scope = str(context.user_data.get("bt_scope") or "portfolio")
+            chart_dir = Path("store/charts")
+            dbp = _db_path()
+            try:
+                if view in ("b0", "b1", "b2"):
+                    labels = {
+                        "b0": "So sánh B0 (mua & giữ)",
+                        "b1": "So sánh B1 (TA)",
+                        "b2": "So sánh B2 (CANSLIM)",
+                    }
+                    path = render_backtest_equity_curve_chart(
+                        scope,
+                        run_id,
+                        chart_dir / f"backtest_{scope}_{run_id}_{view}.png",
+                        db_path=dbp,
+                        align_to_oos=True,
+                    )
+                    await _callback_send_png(
+                        message,
+                        path,
+                        f"{labels.get(view, view)} · {scope} · {run_id}\n"
+                        "(Nghiên cứu — chỉ đọc store)",
+                    )
+                elif view == "yearly":
+                    path = render_yearly_stats_chart(
+                        scope,
+                        "framework",
+                        run_id,
+                        chart_dir / f"backtest_{scope}_{run_id}_yearly.png",
+                        db_path=dbp,
+                    )
+                    await _callback_send_png(
+                        message, path, f"Sharpe theo năm · {scope} · {run_id}"
+                    )
+                elif view == "checks":
+                    conn = _conn()
+                    try:
+                        checks = repository.get_backtest_checks(
+                            conn, scope, "framework", run_id
+                        )
+                    finally:
+                        conn.close()
+                    await message.reply_text(
+                        formatters.format_backtest_checks_only(
+                            checks, scope=scope, run_id=run_id
+                        )
+                    )
+                else:
+                    await message.reply_text(f"Không nhận view «{view}».")
+            except ChartDataError as exc:
+                await message.reply_text(f"{exc}\n\n{formatters.DISCLAIMER}")
+            return
+
+        # --- /check action buttons ---
+        if data.startswith("chk:"):
+            parts = data.split(":", 2)
+            if len(parts) < 3:
+                await message.reply_text("Callback /check không hợp lệ.")
+                return
+            action, ticker = parts[1], parts[2].strip().upper()
+            chart_dir = Path("store/charts")
+
+            if action == "watch_add":
+                wl = read_watchlist()
+                on_wl = any(
+                    str(r.get("ticker", "")).upper() == ticker for r in wl
+                )
+                await message.reply_text(
+                    formatters.format_watch_add_ack(
+                        ticker, on_system_watchlist=on_wl
+                    )
+                )
+                return
+
+            if action == "pnl":
+                signal, fund = read_signal_and_fundamental(ticker)
+                position = read_open_position(ticker)
+                if not position:
+                    await message.reply_text(
+                        f"Chưa có vị thế OPEN cho {ticker} trong store.\n\n"
+                        + formatters.DISCLAIMER
+                    )
+                    return
+                conn = _conn()
+                try:
+                    closes = repository.get_price_closes(conn, ticker, limit_days=5)
+                finally:
+                    conn.close()
+                meta: dict[str, Any] = {}
+                if closes and closes[-1].get("close") is not None:
+                    try:
+                        meta["last_close"] = float(closes[-1]["close"])
+                    except (TypeError, ValueError):
+                        pass
+                await message.reply_text(
+                    formatters.format_check_position_aware(
+                        position, signal, fund, meta=meta
+                    )
+                )
+                return
+
+            conn = _conn()
+            try:
+                closes = repository.get_price_closes(conn, ticker, limit_days=120)
+                funds = repository.get_latest_fundamental_scores(conn, [ticker])
+                fund = funds.get(ticker)
+            finally:
+                conn.close()
+
+            try:
+                if action == "price":
+                    if len(closes) < 2:
+                        raise ChartDataError(f"Chưa đủ giá để vẽ biểu đồ {ticker}.")
+                    path = render_price_chart(
+                        ticker, closes, chart_dir / f"{ticker}_price.png"
+                    )
+                    await _callback_send_png(
+                        message,
+                        path,
+                        f"{ticker} — giá đóng cửa gần đây\n{formatters.DISCLAIMER}",
+                    )
+                elif action == "radar":
+                    if not fund:
+                        raise ChartDataError(f"Chưa có điểm fundamental cho {ticker}.")
+                    path = render_fundamental_radar_chart(
+                        ticker,
+                        float(fund.get("growth_score")),
+                        float(fund.get("quality_score")),
+                        float(fund.get("safety_score")),
+                        float(fund.get("valuation_score")),
+                        chart_dir / f"{ticker}_fundamental.png",
+                    )
+                    await _callback_send_png(
+                        message, path, f"{ticker} — radar 4 trụ Fundamental"
+                    )
+                elif action == "ta":
+                    if len(closes) < 2:
+                        raise ChartDataError(f"Chưa đủ giá để vẽ TA {ticker}.")
+                    ta = ta_indicators_from_closes(closes)
+                    path = render_ta_reference_chart(
+                        ticker, list(closes), ta, chart_dir / f"{ticker}_ta.png"
+                    )
+                    await _callback_send_png(
+                        message,
+                        path,
+                        f"{ticker} — TA tham khảo — không phải tín hiệu hệ thống",
+                    )
+                    block = formatters.format_ta_reference_block(ta)
+                    if block:
+                        await message.reply_text(block)
+                else:
+                    await message.reply_text(f"Không nhận action «{action}».")
+            except (ChartDataError, TypeError, ValueError) as exc:
+                await message.reply_text(f"{exc}\n\n{formatters.DISCLAIMER}")
+            return
+
+        await message.reply_text("Callback không nhận dạng.\n\n" + formatters.DISCLAIMER)
+
     app = Application.builder().token(token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
@@ -952,6 +1099,7 @@ def build_application(token: str):
     app.add_handler(CommandHandler("chart", chart_cmd))
     app.add_handler(CommandHandler("subscribe", subscribe_cmd))
     app.add_handler(CommandHandler("unsubscribe", unsubscribe_cmd))
+    app.add_handler(CallbackQueryHandler(on_callback))
 
     async def bare_ticker_msg(
         update: Update, context: ContextTypes.DEFAULT_TYPE

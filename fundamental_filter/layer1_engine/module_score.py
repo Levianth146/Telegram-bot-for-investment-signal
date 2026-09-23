@@ -13,6 +13,7 @@ from .safety_scoring import (
     get_safety_gate_status,
     validate_safety_weights,
 )
+from .scoring_utils import safe_print
 from .valuation_scoring import (
     calculate_peer_valuation_score,
     calculate_valuation_components,
@@ -300,43 +301,54 @@ def run_module_score(
     if persist:
         result_df.to_csv(output_file, index=False, encoding="utf-8-sig")
 
-    printed_df = result_df[
-        [
-            "module",
-            "module_score",
-            "available_metric_count",
-            "required_metric_count",
-            "available_weight",
-            "missing_metrics",
-            "absolute_safety_score",
-            "peer_relative_score",
-            "safety_trend_score",
-            "safety_gate_status",
-            "peer_valuation_score",
-            "historical_valuation_score",
-            "historical_valuation_available",
-            "valuation_reweight_reason",
-            "peer_method",
-            "peer_quality",
-            "peer_count",
-        ]
-    ].copy()
-    printed_df["missing_metrics"] = printed_df["missing_metrics"].replace("", "none")
-    print(printed_df.to_string(index=False))
-
-    nan_modules = result_df.loc[result_df["module_score"].isna(), "module"].tolist()
-    print("\nSUMMARY")
-    print(f"Total modules: {len(result_df)}")
-    print(
-        "Modules with NaN module_score: "
-        + (", ".join(nan_modules) if nan_modules else "none")
-    )
-    for module in MODULE_WEIGHTS:
-        score = result_df.loc[result_df["module"].eq(module), "module_score"].iloc[0]
-        print(f"{module} score: {score:.6f}" if not pd.isna(score) else f"{module} score: NaN")
-    print("Fundamental Score has not been calculated.")
+    # persist=False = đường batch/backtest: không dump bảng (spam + crash cp1252).
     if persist:
-        print(f"Saved to: {output_file.name}")
+        printed_df = result_df[
+            [
+                "module",
+                "module_score",
+                "available_metric_count",
+                "required_metric_count",
+                "available_weight",
+                "missing_metrics",
+                "absolute_safety_score",
+                "peer_relative_score",
+                "safety_trend_score",
+                "safety_gate_status",
+                "peer_valuation_score",
+                "historical_valuation_score",
+                "historical_valuation_available",
+                "valuation_reweight_reason",
+                "peer_method",
+                "peer_quality",
+                "peer_count",
+            ]
+        ].copy()
+        printed_df["missing_metrics"] = printed_df["missing_metrics"].replace(
+            "", "none"
+        )
+        safe_print(printed_df.to_string(index=False))
+
+        nan_modules = result_df.loc[
+            result_df["module_score"].isna(), "module"
+        ].tolist()
+        safe_print("\nSUMMARY")
+        safe_print(f"Total modules: {len(result_df)}")
+        safe_print(
+            "Modules with NaN module_score: "
+            + (", ".join(nan_modules) if nan_modules else "none")
+        )
+        for module in MODULE_WEIGHTS:
+            score = result_df.loc[
+                result_df["module"].eq(module), "module_score"
+            ].iloc[0]
+            safe_print(
+                f"{module} score: {score:.6f}"
+                if not pd.isna(score)
+                else f"{module} score: NaN"
+            )
+        safe_print("Fundamental Score has not been calculated.")
+        safe_print(f"Saved to: {output_file.name}")
 
     return result_df
 

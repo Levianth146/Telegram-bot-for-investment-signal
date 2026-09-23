@@ -1,7 +1,27 @@
 import math
+import sys
 
 import numpy as np
 import pandas as pd
+
+
+def safe_print(*args, **kwargs) -> None:
+    """Print an toàn trên console Windows cp1252 (tránh crash vì ký tự Unicode như ≥)."""
+    sep = kwargs.pop("sep", " ")
+    end = kwargs.pop("end", "\n")
+    file = kwargs.pop("file", None)
+    flush = kwargs.pop("flush", False)
+    text = sep.join(str(a) for a in args) + end
+    stream = file if file is not None else sys.stdout
+    try:
+        stream.write(text)
+        if flush:
+            stream.flush()
+    except UnicodeEncodeError:
+        enc = getattr(stream, "encoding", None) or "ascii"
+        stream.write(text.encode(enc, errors="replace").decode(enc, errors="replace"))
+        if flush:
+            stream.flush()
 
 
 def validate_weights(weights, name="weights"):

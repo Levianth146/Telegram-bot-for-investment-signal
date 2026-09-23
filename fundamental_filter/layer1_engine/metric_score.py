@@ -9,7 +9,7 @@ from .fundamental_config import (
     PEER_QUALITY_MULTIPLIERS,
 )
 from .safety_scoring import calculate_absolute_metric_score
-from .scoring_utils import normalize_available_weights
+from .scoring_utils import normalize_available_weights, safe_print
 
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -228,38 +228,45 @@ def run_metric_score(
     if persist:
         result_df.to_csv(output_file, index=False, encoding="utf-8-sig")
 
-    printed_columns = [
-        "module",
-        "metric",
-        "peer_percentile",
-        "historical_percentile",
-        "trend_score",
-        "absolute_metric_score",
-        "peer_weight_used",
-        "trend_weight_used",
-        "score_reweight_reason",
-        "metric_score",
-    ]
-    print(result_df[printed_columns].to_string(index=False))
-
-    nan_metrics = result_df.loc[result_df["metric_score"].isna(), "metric"].tolist()
-    print("\nSUMMARY")
-    print(f"Valid metric scores: {int(result_df['metric_score'].notna().sum())}")
-    print(
-        "Metrics with NaN metric_score: "
-        + (", ".join(nan_metrics) if nan_metrics else "none")
-    )
-    print(
-        "Minimum metric_score: "
-        + (f"{valid_scores.min():.6f}" if not valid_scores.empty else "NaN")
-    )
-    print(
-        "Maximum metric_score: "
-        + (f"{valid_scores.max():.6f}" if not valid_scores.empty else "NaN")
-    )
-    print("Module Score and Fundamental Score have not been calculated.")
+    # persist=False = đường batch/backtest: không dump bảng (spam + crash cp1252).
     if persist:
-        print(f"Saved to: {output_file.name}")
+        printed_columns = [
+            "module",
+            "metric",
+            "peer_percentile",
+            "historical_percentile",
+            "trend_score",
+            "absolute_metric_score",
+            "peer_weight_used",
+            "trend_weight_used",
+            "score_reweight_reason",
+            "metric_score",
+        ]
+        safe_print(result_df[printed_columns].to_string(index=False))
+
+        nan_metrics = result_df.loc[
+            result_df["metric_score"].isna(), "metric"
+        ].tolist()
+        safe_print("\nSUMMARY")
+        safe_print(
+            f"Valid metric scores: {int(result_df['metric_score'].notna().sum())}"
+        )
+        safe_print(
+            "Metrics with NaN metric_score: "
+            + (", ".join(nan_metrics) if nan_metrics else "none")
+        )
+        safe_print(
+            "Minimum metric_score: "
+            + (f"{valid_scores.min():.6f}" if not valid_scores.empty else "NaN")
+        )
+        safe_print(
+            "Maximum metric_score: "
+            + (f"{valid_scores.max():.6f}" if not valid_scores.empty else "NaN")
+        )
+        safe_print(
+            "Module Score and Fundamental Score have not been calculated."
+        )
+        safe_print(f"Saved to: {output_file.name}")
 
     return result_df
 

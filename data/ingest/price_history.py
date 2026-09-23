@@ -177,11 +177,31 @@ def fetch_universe_ohlcv(
 
 
 def to_close_series(ohlcv: pd.DataFrame) -> pd.Series:
-    """Close prices indexed by date string — input for Kalman/GARCH stubs later."""
+    """Close prices indexed by date string — input for Kalman/GARCH / regime.
+
+    Luôn sắp xếp theo ngày tăng dần (live + backtest cùng chuẩn hoá). Provider /
+    cache CSV có thể trả hàng đảo chiều — không sort → ``diff()`` sai dấu return.
+    """
     frame = ohlcv.copy()
     if "date" not in frame.columns or "close" not in frame.columns:
         raise ValueError("ohlcv must include date and close columns")
+    frame = frame.sort_values("date").reset_index(drop=True)
     series = pd.to_numeric(frame["close"], errors="coerce")
     series.index = frame["date"].astype(str)
     series.name = "close"
-    return series.dropna()
+    series = series.dropna().sort_index()
+    if series.index.has_duplicates:
+        logger.warning(
+            "to_close_series: duplicate dates in OHLCV (n=%s unique=%s)",
+            len(series.index),
+            series.index.nunique(),
+        )
+    # Cảnh báo nếu index string không đơn điệu tăng (ISO date thì sort_index đủ).
+    if len(series) >= 2 and not series.index.is_monotonic_increasing:
+        logger.warning(
+            "to_close_series: date index not monotonic increasing after sort "
+            "(first=%s last=%s)",
+            series.index[0],
+            series.index[-1],
+        )
+    return series

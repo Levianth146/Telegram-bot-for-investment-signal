@@ -404,3 +404,76 @@ Kiểm tra readonly + `pytest -q` (không retune OOS).
 | Doc path framework `.docx` | **PASS** | Repo root (không `docs/khung_…`) |
 
 **GAP ops (không chặn compile/test):** `sector_mapping` historically mỏng vs full VN100 peer INDUSTRY — xem audit E2E A4; bổ sung batch `sector_job` khi ops. Final VN100 daily+fund vẫn **chạy lâu** (API Community) — dùng FAST DEV cho bảng nhanh; denser −0.84 giữ nguyên.
+
+### Phase 0 OOS re-measure sau P0-1 + P0-2 (2026-09-23)
+
+Một lần đo lại FINAL VN100 sau fix audit (`BUG_REPORT_QUANT_AUDIT.md`):
+
+| Fix | Nội dung |
+|---|---|
+| **P0-1** | Sizing inverse-vol / `w_max` chỉ trên tập **BUY** — không pha loãng 1/N toàn watchlist (`signal_engine` + test `test_signal_sizing_buy_only`) |
+| **P0-2** | `to_close_series` sort tăng dần theo `date` — live/backtest cùng chuẩn hoá giá |
+
+**Cửa sổ (giữ protocol):** VN100, `--with-fundamentals`, `signal_every=1`, OOS `2025-03-22`→`2025-09-22`, warmup 3y, `--no-walk-forward`. Artifacts: `store/backtest_final_vn100_20260923_p0fix.json`, `store/backtest_report.xlsx`, log `store/backtest_final_vn100_20260923_p0fix.run.log`.
+
+**Ops note (không đổi scoring):** Windows cp1252 crash `UnicodeEncodeError` (≥) khi `run_fundamental_score` dump bảng trong `precompute_fundamental_states` — đã quiet khi `persist=False` + `scoring_utils.safe_print` cho CLI.
+
+| Cột | Total Return | Sharpe | MDD | n_trades | Avg exposure | Cost drag |
+|---|---|---|---|---|---|---|
+| B0 buy&hold | **+24.14%** | **1.83** | −19.88% | 0 | — | 0.50% |
+| B1 TA | +13.50% | **2.73** | −4.29% | 542 | — | 1.96% |
+| B2 CANSLIM | 0.00% | — | 0.00% | 0 | — | 0.00% |
+| **Framework** | **≈0.00%** | **0.01** | −1.54% | **105** | **10.85%** | — |
+| VN-Index BH | +22.55% | 1.82 | −17.84% | — | — | 0.49% |
+| VN30 BH | +30.51% | 2.25 | −15.96% | — | — | 0.52% |
+
+Ablation OOS (cùng bundle; layer Sharpe): B0 1.83 → fundamental 1.61 → regime n/a → alpha 0.85 (n=96) → risk **0.01** (n=105); B1 2.74; B2 n/a.
+
+**Đối chiếu pre-fix** (`store/backtest_final_vn100_20260922.json` → `store/backtest_final_vn100_20260923_p0fix.json`):
+
+| Metric | 20260922 (pre P0-1/P0-2) | 20260923 p0fix |
+|---|---|---|
+| Total Return | +0.23% | ≈0.00% |
+| CAGR | +0.46% | ≈0.00% |
+| Sharpe | **0.51** | **0.01** |
+| Avg exposure | **3.29%** | **10.85%** |
+| n_trades | 105 | 105 |
+
+Avg exposure tăng đúng hướng P0-1 (BUY-only sizing); n_trades không đổi. Sharpe/TR Framework lần này ≈ flat — **thua B0/B1 và index**; denser OOS Sharpe **−0.84** (P1 denser, no-fund) **vẫn giữ** phía trên. **Không** flip MC/BL (gate ΔSharpe OOS ≥ +0.10 + ≥30 lệnh có ý nghĩa chưa đạt theo nghĩa thắng baseline).
+
+**Quyết định:** giữ P0-1/P0-2 trong bản chính (đúng logic ARCHITECTURE); Framework OOS này = phát hiện hợp lệ (underperform), **không** cook tham số để vá số.
+
+### Phase 1 P2-2 OOS — signal_tickers=None / watchlist Tầng 1 (2026-09-23→24)
+
+Một lần đo riêng sau P2-2 (không gộp metric với Phase 0): ablation `regime`/`alpha`/`risk` + đường framework (`run_backtest_report` + `ablation` walk-forward) truyền `signal_tickers=None` để engine dùng watchlist Tầng 1 động (khớp live `daily_job`). **Giữ** `signal_closes`/universe cho B0/B1/B2. Không đổi ngưỡng.
+
+**Cửa sổ (giữ protocol):** VN100, `--with-fundamentals`, `signal_every=1`, OOS `2025-03-22`→`2025-09-22`, warmup 3y, `--no-walk-forward`. Artifact: `store/backtest_final_vn100_20260923_p22_watchlist.json` (log `store/backtest_final_vn100_20260923_p22_watchlist.run.log`).
+
+| Metric (Framework OOS) | p0fix | p22 watchlist | Δ |
+|---|---|---|---|
+| Total Return | ≈0.00% | **+2.15%** | ↑ |
+| CAGR | ≈0.00% | **+4.42%** | ↑ |
+| Sharpe | **0.01** | **0.52** | +0.51 |
+| Max Drawdown | −1.54% | −5.14% | sâu hơn |
+| n_trades | 105 | 101 | −4 |
+| Win rate | 49.52% | 49.50% | ≈ |
+| Avg exposure | **10.85%** | **32.12%** | ↑ ~3× |
+| Profit factor | 0.98 | 1.19 | ↑ |
+
+Ablation OOS (cùng bundle; layer Sharpe): B0 1.83 → fundamental 1.61 → regime n/a → alpha 0.85 (n=96) → risk **0.52** (n=101; p0fix risk **0.01**/n=105); B1 2.74; B2 n/a. B0/B1/B2 cột report **không đổi** vs p0fix (đúng kỳ vọng — baselines vẫn universe).
+
+**Đối chiếu:** thu hẹp scope Tầng 2 về watchlist làm avg_exposure và Sharpe Framework tăng rõ so với p0fix (universe emit); vẫn **thua B0/B1 và index** trên cửa sổ này. Denser −0.84 và Phase 0 log **giữ nguyên**. **Không** flip MC/BL; **không** cook ngưỡng.
+
+**Quyết định:** giữ P2-2 (`signal_tickers=None` trên framework/ablation quant layers) — khớp ARCHITECTURE live/backtest; metric riêng trong artifact p22.
+
+### Phase 3 P2-1 — profile + Kalman incremental; GARCH refit-N chưa chốt (2026-09-24)
+
+**Profile (smoke, không FINAL VN100):** `BACKTEST_PROFILE=1` trên `run_backtest` cộng dồn giây `regime` / `kalman` / `garch`. Smoke ~80 phiên × 2 mã: **GARCH ≈97%** hot path signal; Kalman/regime nhỏ — xác nhận ưu tiên tối ưu GARCH tần suất (khi nhóm chốt N) và Kalman incremental (đã làm).
+
+| Hạng mục | Thay đổi | Ảnh hưởng metric? |
+|---|---|---|
+| **Kalman** | `fit_kalman_trend(..., init_state=, return_state=)`; `kalman_cache` / `kalman_memo` **key theo ticker** (không `n_returns`); backtest wire qua `generate_signals`. OU path vẫn full-fit (cần full level). | Không kỳ vọng đổi (tương đương expanding filter) |
+| **GARCH** | Config `risk_garch.refit_every_n: null` + hook `should_refit_garch`. **N chưa chốt** — stub luôn refit mỗi phiên (V1). Set N chỉ log warning, **không** đổi cadence. | Không (cho đến khi nhóm chốt N + DECISIONS) |
+| Ngưỡng alpha/regime | Không đụng | — |
+
+**Quyết định:** giữ Kalman incremental trong bản chính; **không** bật GARCH refit-N cho đến khi nhóm chọn N (vd. 5/21) và append DECISIONS riêng. Không cook ngưỡng.

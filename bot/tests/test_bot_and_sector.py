@@ -429,3 +429,138 @@ def test_bot_dry_run(capsys, tmp_path, monkeypatch):
     bot_main.main(["--dry-run"])
     out = capsys.readouterr().out
     assert "bot dry-run OK" in out
+
+
+def test_signals_pagination_edges():
+    """C-4.4 — trang đầu không ◀; trang cuối không ▶; callback ≤ 64 byte."""
+    rows = []
+    for i in range(25):
+        rows.append(
+            {
+                "date": "2024-06-28",
+                "ticker": f"B{i:02d}",
+                "action": "BUY",
+                "score": 1.0 - i * 0.01,
+                "p_regime": 0.6,
+                "sigma_hat": 0.02,
+                "size": 0.05,
+            }
+        )
+    for i in range(15):
+        rows.append(
+            {
+                "date": "2024-06-28",
+                "ticker": f"W{i:02d}",
+                "action": "WATCH",
+                "score": 0.1,
+                "p_regime": 0.6,
+                "sigma_hat": 0.02,
+                "size": 0.03,
+            }
+        )
+    total = formatters.signals_total_pages(rows)
+    assert total >= 3
+
+    page0 = formatters.format_signals_list(rows, page=0)
+    assert "B00" in page0
+    assert "B10" not in page0  # trang 0 chỉ 10 BUY đầu
+    assert "Trang 1/" in page0
+
+    kb0 = formatters.build_signals_keyboard(0, total)
+    texts0 = [b.text for row in kb0.inline_keyboard for b in row]
+    assert "◀ Trước" not in texts0
+    assert "Tiếp ▶" in texts0
+
+    kb_last = formatters.build_signals_keyboard(total - 1, total)
+    texts_last = [b.text for row in kb_last.inline_keyboard for b in row]
+    assert "◀ Trước" in texts_last
+    assert "Tiếp ▶" not in texts_last
+
+    for kb in (kb0, kb_last):
+        for row in kb.inline_keyboard:
+            for btn in row:
+                assert len(btn.callback_data.encode("utf-8")) <= 64
+                assert btn.callback_data.startswith("page:signals:")
+
+
+def test_backtest_and_regime_and_start_keyboards():
+    """Nút /backtest, /regime, /start — callback ngắn; ReplyKeyboard có lệnh."""
+    bt = formatters.build_backtest_keyboard("run_demo_20260923")
+    cbs = [b.callback_data for row in bt.inline_keyboard for b in row]
+    assert any(c.startswith("bt:b0:") for c in cbs)
+    assert any(c.startswith("bt:yearly:") for c in cbs)
+    assert any(c.startswith("bt:checks:") for c in cbs)
+    assert all(len(c.encode("utf-8")) <= 64 for c in cbs)
+
+    rg = formatters.build_regime_keyboard()
+    assert rg.inline_keyboard[0][0].callback_data == "nav:signals"
+
+    start_kb = formatters.build_start_reply_keyboard()
+    labels = [b.text for row in start_kb.keyboard for b in row]
+    assert labels == ["/check", "/signals", "/regime", "/positions"]
+
+
+def test_callback_handler_answers_and_no_network(tmp_path, monkeypatch):
+    """C-4.2/3 — answer() luôn gọi; bấm nút không kích hoạt network provider."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock, MagicMock
+
+    db = tmp_path / "bot.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db))
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    conn.close()
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("network/provider must not be called")
+
+    # Nếu callback vô tình import/gọi provider → fail.
+    monkeypatch.setattr(
+        "data.providers.registry.get_provider", _boom, raising=False
+    )
+
+    from bot import main as bot_main
+
+    app = bot_main.build_application("test-token-unused")
+    # Lấy CallbackQueryHandler callback
+    cb_handler = None
+    for handlers in app.handlers.values():
+        for h in handlers:
+            if h.__class__.__name__ == "CallbackQueryHandler":
+                cb_handler = h
+                break
+    assert cb_handler is not None
+
+    answer = AsyncMock()
+    reply_text = AsyncMock()
+    query = SimpleNamespace(
+        data="nav:signals",
+        answer=answer,
+        message=SimpleNamespace(
+            reply_text=reply_text,
+            edit_message_text=AsyncMock(),
+        ),
+        edit_message_text=AsyncMock(),
+    )
+    update = SimpleNamespace(callback_query=query)
+    context = SimpleNamespace(user_data={}, args=None)
+
+    async def _run():
+        await cb_handler.callback(update, context)
+
+    asyncio.run(_run())
+    answer.assert_awaited()
+    # nav:signals → gửi danh sách (có thể trống) qua reply hoặc edit
+    assert (
+        reply_text.await_count >= 1
+        or query.edit_message_text.await_count >= 1
+        or query.message.edit_message_text.await_count >= 1
+    )
+
+
+def test_watch_add_ack_copy():
+    on = formatters.format_watch_add_ack("FPT", on_system_watchlist=True)
+    off = formatters.format_watch_add_ack("XYZ", on_system_watchlist=False)
+    assert "FPT" in on and "rổ theo dõi" in on
+    assert "XYZ" in off and "chưa có" in off.casefold()

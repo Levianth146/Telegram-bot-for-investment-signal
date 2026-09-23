@@ -7,6 +7,7 @@ calls ``generate_signals``. Shared with ``backtest/`` (ARCHITECTURE invariant #2
 from __future__ import annotations
 
 import json
+import time
 from typing import Any, Mapping
 
 import numpy as np
@@ -36,14 +37,27 @@ def _log_returns(close: pd.Series) -> pd.Series:
     return np.log(prices).diff().dropna()
 
 
+def _perf_add(perf: dict[str, float] | None, key: str, dt: float) -> None:
+    if perf is None:
+        return
+    perf[key] = float(perf.get(key, 0.0)) + float(dt)
+
+
 def _compute_alpha_pack(
     close: pd.Series,
     *,
     fund: Mapping[str, Any],
     kalman_enabled: bool,
     use_ou: bool,
+    ticker: str | None = None,
+    kalman_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Kalman/OU alpha + Alpha_effective for one ticker (shared BL + signal path)."""
+    """Kalman/OU alpha + Alpha_effective for one ticker (shared BL + signal path).
+
+    P2-1: ``kalman_cache`` key theo ticker (không theo n_returns). Khi không OU,
+    resume state từ lần trước — tương đương expanding filter. OU cần full level
+    → bỏ init_state, fit lại từ đầu rồi cập nhật cache.
+    """
     log_px = np.log(close)
     alpha_raw = float("nan")
     tstat = float("nan")
@@ -51,7 +65,20 @@ def _compute_alpha_pack(
     kalman_level_last = None
     alpha_method = "none"
     if kalman_enabled:
-        level, slope, slope_var = fit_kalman_trend(log_px)
+        key = str(ticker or "").strip().upper() or None
+        init = None
+        if (
+            not use_ou
+            and kalman_cache is not None
+            and key
+            and key in kalman_cache
+        ):
+            init = kalman_cache[key]
+        level, slope, slope_var, state = fit_kalman_trend(
+            log_px, init_state=init, return_state=True
+        )
+        if kalman_cache is not None and key:
+            kalman_cache[key] = state
         alpha_raw = float(slope.iloc[-1])
         tstat = slope_tstat(float(slope.iloc[-1]), float(slope_var.iloc[-1]))
         alpha_method = "kalman_slope"
@@ -168,6 +195,8 @@ def generate_signals(
     config: Mapping[str, Any] | None = None,
     regime_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
     garch_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
+    kalman_cache: dict[str, Any] | None = None,
+    perf_timings: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
     """Generate one signals row per ticker (schema.sql contract).
 
@@ -190,6 +219,11 @@ def generate_signals(
     garch_cache:
         Optional same-day memo ``{(as_of, ticker, n_returns): risk_pack}`` — tránh
         fit GARCH trùng cùng as_of trong một run (không đổi daily→weekly).
+    kalman_cache:
+        Optional memo theo ``ticker`` lưu state Kalman cuối (P2-1 incremental).
+    perf_timings:
+        Optional dict cộng dồn giây cho ``regime`` / ``kalman`` / ``garch``
+        (bật khi ``BACKTEST_PROFILE=1``).
     """
     if not close_by_ticker:
         return []
@@ -205,7 +239,17 @@ def generate_signals(
     regime_enabled = bool((qcfg.get("regime_markov") or {}).get("enabled", True))
     kalman_enabled = bool((qcfg.get("alpha_kalman_trend") or {}).get("enabled", True))
     ou_enabled = bool((qcfg.get("alpha_ou_meanreversion") or {}).get("enabled", True))
-    garch_enabled = bool((qcfg.get("risk_garch") or {}).get("enabled", True))
+    garch_cfg = dict(qcfg.get("risk_garch") or {})
+    garch_enabled = bool(garch_cfg.get("enabled", True))
+    # None = refit mỗi phiên (V1). N>0 chỉ stub/log — chưa đổi semantics.
+    _raw_refit_n = garch_cfg.get("refit_every_n", None)
+    garch_refit_every_n: int | None
+    try:
+        garch_refit_every_n = (
+            None if _raw_refit_n is None else int(_raw_refit_n)
+        )
+    except (TypeError, ValueError):
+        garch_refit_every_n = None
     bl_cfg = dict(qcfg.get("portfolio_black_litterman") or {})
     bl_enabled = bool(bl_cfg.get("enabled", False))
     bl_tau = float(bl_cfg.get("tau", 0.05))
@@ -249,6 +293,7 @@ def generate_signals(
         n_rets = int(len(index_returns))
         cache_key = (str(as_of_date), str(regime_benchmark), n_rets)
         probs: Mapping[str, Any] | None = None
+        t_reg = time.perf_counter()
         if regime_cache is not None and cache_key in regime_cache:
             probs = regime_cache[cache_key]
         else:
@@ -256,6 +301,7 @@ def generate_signals(
             probs = regime_pack["probabilities"]
             if regime_cache is not None:
                 regime_cache[cache_key] = probs
+        _perf_add(perf_timings, "regime", time.perf_counter() - t_reg)
         p_bull = float(probs.get("bull", 0.5))
         regime_method = str(probs.get("method", "unknown"))
 
@@ -263,6 +309,7 @@ def generate_signals(
 
     # Precompute alphas (needed for BL views; reused in emit loop)
     alpha_packs: dict[str, dict[str, Any]] = {}
+    t_kal = time.perf_counter()
     for ticker in tickers:
         close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
         if len(close) < 30:
@@ -272,36 +319,15 @@ def generate_signals(
             fund=scores.get(ticker) or {},
             kalman_enabled=kalman_enabled,
             use_ou=use_ou,
+            ticker=ticker,
+            kalman_cache=kalman_cache,
         )
+    _perf_add(perf_timings, "kalman", time.perf_counter() - t_kal)
 
-    # Portfolio weights over signal universe only
-    if bl_enabled and len(alpha_packs) >= 2:
-        alpha_signals = {
-            t: pack["alpha_eff"]
-            for t, pack in alpha_packs.items()
-            if pack["alpha_eff"] is not None and not pd.isna(pack["alpha_eff"])
-        }
-        valuation_signals = {
-            t: pack["valuation"]
-            for t, pack in alpha_packs.items()
-            if pack["valuation"] is not None and not pd.isna(pack["valuation"])
-        }
-        weights = bl_portfolio_weights(
-            close_by_ticker,
-            list(alpha_packs),
-            alpha_signals,
-            valuation_signals or None,
-            tau=bl_tau,
-            delta=bl_delta,
-        )
-        weight_method = "black_litterman"
-    else:
-        weights = equal_weight_fallback(tickers)
-        weight_method = "equal_weight" if not bl_enabled else "equal_weight_bl_fallback"
-
-    # Precompute sigma cho inverse-vol sizing (Option B V1)
+    # Precompute sigma (cần cho stop + sizing; inverse-vol chỉ trên tập BUY sau)
     sigma_by_ticker: dict[str, float] = {}
     risk_by_ticker: dict[str, dict[str, Any]] = {}
+    t_garch = time.perf_counter()
     for ticker in tickers:
         close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
         if len(close) < 30:
@@ -313,7 +339,11 @@ def generate_signals(
             if garch_cache is not None and garch_key in garch_cache:
                 risk = dict(garch_cache[garch_key])
             else:
-                risk = fit_or_fallback_sigma(returns)
+                risk = fit_or_fallback_sigma(
+                    returns,
+                    refit_every_n=garch_refit_every_n,
+                    days_since_fit=None,
+                )
                 if garch_cache is not None:
                     # Không cache object model nặng — chỉ sigma/method (same-day reuse).
                     garch_cache[garch_key] = {
@@ -331,15 +361,7 @@ def generate_signals(
         sigma_hat = risk.get("sigma_hat")
         if sigma_hat is not None and not pd.isna(sigma_hat) and float(sigma_hat) > 0:
             sigma_by_ticker[ticker] = float(sigma_hat)
-
-    if garch_enabled and sigma_by_ticker:
-        risk_weights = inverse_vol_normalize_weights(
-            sigma_by_ticker, w_max=w_max, target_sum=1.0
-        )
-        size_method = "inverse_vol_normalize"
-    else:
-        risk_weights = {}
-        size_method = "legacy_sigma_target"
+    _perf_add(perf_timings, "garch", time.perf_counter() - t_garch)
 
     hawkes_mult = 1.0
     if hawkes_enabled:
@@ -361,57 +383,30 @@ def generate_signals(
         except Exception:  # noqa: BLE001
             hawkes_mult = 1.0
 
-    signals: list[dict[str, Any]] = []
+    # Vòng 1: quyết định action trước — sizing chỉ trên tập BUY (P0-1).
+    decided: dict[str, dict[str, Any]] = {}
     for ticker in tickers:
         close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
         if len(close) < 30:
-            signals.append(
-                {
-                    "date": as_of_date,
-                    "ticker": ticker,
-                    "action": "WATCH",
-                    "score": None,
-                    "p_regime": p_bull,
-                    "sigma_hat": None,
-                    "stop": None,
-                    "size": 0.0,
-                    "p_tp_before_sl": None,
-                    "cvar95": None,
-                    "reason_json": json.dumps(
-                        {"error": "insufficient_price_history", "n": len(close)},
-                        ensure_ascii=False,
-                    ),
-                }
-            )
+            decided[ticker] = {
+                "skip": True,
+                "n": len(close),
+                "action": "WATCH",
+                "action_uncapped": "WATCH",
+            }
             continue
-
-        entry_price = float(close.iloc[-1])
         pack = alpha_packs.get(ticker) or _compute_alpha_pack(
             close,
             fund=scores.get(ticker) or {},
             kalman_enabled=kalman_enabled,
             use_ou=use_ou,
+            ticker=ticker,
+            kalman_cache=kalman_cache,
         )
         alpha_eff = pack["alpha_eff"]
         tstat = pack["tstat"]
         half_life = pack["half_life"]
         alpha_method = pack["alpha_method"]
-        growth = pack["growth"]
-        quality = pack["quality"]
-
-        risk = risk_by_ticker.get(ticker) or {
-            "sigma_hat": float("nan"),
-            "method": "missing",
-        }
-        sigma_hat = risk["sigma_hat"]
-        if size_method == "inverse_vol_normalize":
-            size = float(risk_weights.get(ticker, 0.0))
-        else:
-            size = position_size(sigma_hat, sigma_target, w_max=w_max)
-        # BL / equal-weight overlay: không vượt portfolio weight × hawkes
-        size = min(size, float(weights.get(ticker, w_max))) * float(hawkes_mult)
-        stop = stop_loss_price(entry_price, sigma_hat, k=stop_k)
-
         fund_row = scores.get(ticker) or {}
         fund_view = str(
             fund_row.get("fundamental_view") or fund_row.get("classification") or ""
@@ -443,6 +438,138 @@ def generate_signals(
             alpha_method=alpha_method,
             half_life=half_life,
         )
+        decided[ticker] = {
+            "skip": False,
+            "close": close,
+            "pack": pack,
+            "alpha_eff": alpha_eff,
+            "tstat": tstat,
+            "half_life": half_life,
+            "alpha_method": alpha_method,
+            "growth": pack["growth"],
+            "quality": pack["quality"],
+            "fund_view": fund_view,
+            "action": action,
+            "action_uncapped": action_uncapped,
+            "entry_price": float(close.iloc[-1]),
+        }
+
+    buy_tickers = [
+        t for t, d in decided.items() if not d.get("skip") and d.get("action") == "BUY"
+    ]
+
+    # Portfolio weights: BL chỉ trên BUY; equal-weight KHÔNG dùng làm trần size (P0-1).
+    weights: dict[str, float] = {}
+    if bl_enabled and len(buy_tickers) >= 2:
+        buy_packs = {t: alpha_packs[t] for t in buy_tickers if t in alpha_packs}
+        alpha_signals = {
+            t: pack["alpha_eff"]
+            for t, pack in buy_packs.items()
+            if pack["alpha_eff"] is not None and not pd.isna(pack["alpha_eff"])
+        }
+        valuation_signals = {
+            t: pack["valuation"]
+            for t, pack in buy_packs.items()
+            if pack["valuation"] is not None and not pd.isna(pack["valuation"])
+        }
+        weights = bl_portfolio_weights(
+            close_by_ticker,
+            list(buy_packs),
+            alpha_signals,
+            valuation_signals or None,
+            tau=bl_tau,
+            delta=bl_delta,
+        )
+        weight_method = "black_litterman"
+    elif bl_enabled and len(buy_tickers) == 1:
+        weights = {buy_tickers[0]: float(w_max)}
+        weight_method = "black_litterman_single_buy"
+    elif bl_enabled:
+        weights = equal_weight_fallback(tickers)
+        weight_method = "equal_weight_bl_fallback"
+    else:
+        # BL off: không pha loãng 1/N watchlist — trần duy nhất là w_max.
+        weights = {}
+        weight_method = "w_max_only"
+
+    buy_sigmas = {
+        t: sigma_by_ticker[t] for t in buy_tickers if t in sigma_by_ticker
+    }
+    if garch_enabled and buy_sigmas:
+        risk_weights = inverse_vol_normalize_weights(
+            buy_sigmas, w_max=w_max, target_sum=1.0
+        )
+        size_method = "inverse_vol_normalize"
+    else:
+        risk_weights = {}
+        size_method = "legacy_sigma_target"
+
+    signals: list[dict[str, Any]] = []
+    for ticker in tickers:
+        meta = decided.get(ticker) or {"skip": True, "n": 0, "action": "WATCH"}
+        if meta.get("skip"):
+            signals.append(
+                {
+                    "date": as_of_date,
+                    "ticker": ticker,
+                    "action": "WATCH",
+                    "score": None,
+                    "p_regime": p_bull,
+                    "sigma_hat": None,
+                    "stop": None,
+                    "size": 0.0,
+                    "p_tp_before_sl": None,
+                    "cvar95": None,
+                    "reason_json": json.dumps(
+                        {
+                            "error": "insufficient_price_history",
+                            "n": int(meta.get("n") or 0),
+                        },
+                        ensure_ascii=False,
+                    ),
+                }
+            )
+            continue
+
+        close = meta["close"]
+        entry_price = float(meta["entry_price"])
+        pack = meta["pack"]
+        alpha_eff = meta["alpha_eff"]
+        tstat = meta["tstat"]
+        half_life = meta["half_life"]
+        alpha_method = meta["alpha_method"]
+        growth = meta["growth"]
+        quality = meta["quality"]
+        fund_view = meta["fund_view"]
+        action = meta["action"]
+        action_uncapped = meta["action_uncapped"]
+
+        risk = risk_by_ticker.get(ticker) or {
+            "sigma_hat": float("nan"),
+            "method": "missing",
+        }
+        sigma_hat = risk["sigma_hat"]
+        stop = stop_loss_price(entry_price, sigma_hat, k=stop_k)
+
+        # Non-BUY: size = 0 (không giữ weight ảo trên WATCH/SELL).
+        if action != "BUY":
+            size = 0.0
+        else:
+            if size_method == "inverse_vol_normalize":
+                size = float(risk_weights.get(ticker, 0.0))
+            else:
+                size = position_size(sigma_hat, sigma_target, w_max=w_max)
+            # Trần: w_max luôn; BL overlay chỉ khi enabled.
+            caps = [float(w_max)]
+            if bl_enabled and ticker in weights:
+                caps.append(float(weights[ticker]))
+            size = min([size] + caps) * float(hawkes_mult)
+
+        portfolio_weight = (
+            float(weights.get(ticker, 0.0))
+            if bl_enabled
+            else (float(w_max) if action == "BUY" else 0.0)
+        )
 
         reason = {
             "regime_method": regime_method,
@@ -455,7 +582,8 @@ def generate_signals(
             "sigma_method": risk.get("method"),
             "size_method": size_method,
             "weight_method": weight_method,
-            "portfolio_weight": float(weights.get(ticker, 0.0)),
+            "portfolio_weight": portfolio_weight,
+            "n_buy_universe": len(buy_tickers),
             "hawkes_size_mult": float(hawkes_mult),
             "growth_score": growth,
             "quality_score": quality,
@@ -475,6 +603,7 @@ def generate_signals(
             from quant_engine.probabilistic.monte_carlo import monte_carlo_signal_stats
 
             try:
+                returns = _log_returns(close)
                 mc = monte_carlo_signal_stats(
                     entry_price,
                     float(sigma_hat),

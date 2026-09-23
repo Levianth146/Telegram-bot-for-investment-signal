@@ -24,6 +24,27 @@ def test_to_close_series():
     assert series.iloc[-1] == 11.0
 
 
+def test_to_close_series_sorts_reversed_provider_rows():
+    """P0-2: hàng đảo thời gian từ provider → Series tăng dần; diff đúng dấu."""
+    frame = pd.DataFrame(
+        {
+            "date": ["2024-01-05", "2024-01-04", "2024-01-03", "2024-01-02"],
+            "close": [13.0, 12.0, 11.0, 10.0],
+            "volume": [4, 3, 2, 1],
+        }
+    )
+    series = to_close_series(frame)
+    assert list(series.index) == [
+        "2024-01-02",
+        "2024-01-03",
+        "2024-01-04",
+        "2024-01-05",
+    ]
+    assert list(series.values) == [10.0, 11.0, 12.0, 13.0]
+    diffs = series.diff().dropna()
+    assert (diffs > 0).all()
+
+
 def test_cache_ohlcv(tmp_path):
     frame = pd.DataFrame({"date": ["2024-01-02"], "close": [10.0], "volume": [1]})
     path = cache_ohlcv(frame, "VNM", tmp_path)

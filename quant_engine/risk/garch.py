@@ -5,12 +5,21 @@ Tham chiếu: mục "Risk" trong tài liệu framework.
 
 Dùng thư viện ``arch``. Biên độ ±7% HOSE cắt cụt return → vol có thể bị
 đánh giá thấp — ghi chú khi diễn giải.
+
+P2-1: ``should_refit_garch`` / ``refit_every_n`` là hook — V1 vẫn refit mỗi
+phiên cho đến khi nhóm chốt N và ghi DECISIONS (không tự đổi ngưỡng).
 """
 
 from __future__ import annotations
 
+import logging
+from typing import Any
+
 import numpy as np
 import pandas as pd
+
+_LOG = logging.getLogger(__name__)
+_REFIT_N_STUB_LOGGED = False
 
 
 def _as_returns(returns_series) -> pd.Series:
@@ -18,6 +27,33 @@ def _as_returns(returns_series) -> pd.Series:
     if series.empty:
         raise ValueError("returns_series is empty")
     return series
+
+
+def should_refit_garch(
+    *,
+    days_since_fit: int | None,
+    refit_every_n: int | None,
+) -> bool:
+    """Hook tần suất refit GARCH (P2-1).
+
+    - ``refit_every_n`` None/≤0 → luôn refit (hành vi V1 hiện tại).
+    - N>0: **stub** — vẫn trả True (refit mỗi lần) + log 1 lần; chưa bật
+      roll-forward forecast giữa các lần fit cho đến khi nhóm chốt N.
+    """
+    global _REFIT_N_STUB_LOGGED
+    if refit_every_n is None or int(refit_every_n) <= 0:
+        return True
+    if not _REFIT_N_STUB_LOGGED:
+        _LOG.warning(
+            "risk_garch.refit_every_n=%s đã cấu hình nhưng chưa kích hoạt "
+            "(stub P2-1) — vẫn refit mỗi phiên; chờ DECISIONS chốt N. "
+            "days_since_fit=%s",
+            refit_every_n,
+            days_since_fit,
+        )
+        _REFIT_N_STUB_LOGGED = True
+    # Stub: không đổi semantics cho đến khi nhóm quyết định.
+    return True
 
 
 def fit_gjr_garch(returns_series):
@@ -52,8 +88,22 @@ def rolling_sigma_fallback(returns_series, window: int = 20) -> float:
     return float(trail.std(ddof=1))
 
 
-def fit_or_fallback_sigma(returns_series, window: int = 20) -> dict:
-    """Return ``{sigma_hat, method, model}`` with GARCH preferred."""
+def fit_or_fallback_sigma(
+    returns_series,
+    window: int = 20,
+    *,
+    refit_every_n: int | None = None,
+    days_since_fit: int | None = None,
+) -> dict[str, Any]:
+    """Return ``{sigma_hat, method, model}`` with GARCH preferred.
+
+    ``refit_every_n`` / ``days_since_fit``: hook P2-1 — hiện luôn fit
+    (``should_refit_garch`` stub); không đổi kết quả so với V1.
+    """
+    # Gọi hook để log stub khi N được set; hành vi vẫn full fit.
+    should_refit_garch(
+        days_since_fit=days_since_fit, refit_every_n=refit_every_n
+    )
     try:
         model = fit_gjr_garch(returns_series)
         sigma = forecast_sigma(model, horizon=1)
