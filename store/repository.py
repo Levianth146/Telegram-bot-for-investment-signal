@@ -643,6 +643,16 @@ def get_active_subscribers(conn: sqlite3.Connection) -> list[int]:
     return [int(r["chat_id"]) for r in cur.fetchall()]
 
 
+def is_subscriber_active(conn: sqlite3.Connection, chat_id: int) -> bool:
+    """True khi chat_id đang bật nhận tin (``is_active=1``)."""
+    cur = conn.execute(
+        "SELECT is_active FROM subscribers WHERE chat_id = ?",
+        (int(chat_id),),
+    )
+    row = cur.fetchone()
+    return bool(row and int(row["is_active"] or 0) == 1)
+
+
 def upsert_price_bars(conn: sqlite3.Connection, bars: list[dict]) -> int:
     """Batch upsert OHLCV/close cho /chart price (pipeline ghi, bot đọc)."""
     if not bars:

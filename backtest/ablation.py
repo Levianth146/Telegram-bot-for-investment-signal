@@ -189,7 +189,11 @@ def _b1_ta_result(
     end_date: str,
     config: dict,
 ) -> dict:
-    """Baseline B1 — TA thuần + cùng cost/T+1 lag như framework."""
+    """Baseline B1 — TA thuần + cùng cost/T+1 lag như framework.
+
+    EMA/RSI tính trên chuỗi có warmup (trước ``start_date``); equity/metrics
+    chỉ báo cáo trong cửa sổ ``[start_date, end_date]``.
+    """
     import pandas as pd
 
     from backtest.metrics import compute_metrics
@@ -200,7 +204,8 @@ def _b1_ta_result(
     for ticker, series in close_by_ticker.items():
         s = pd.to_numeric(series, errors="coerce").dropna()
         s.index = s.index.astype(str)
-        s = s.loc[(s.index >= start_date) & (s.index <= end_date)]
+        # Giữ lịch sử trước start_date để EMA50/RSI warmup; cắt sau end_date.
+        s = s.loc[s.index <= end_date]
         if len(s) < 60:
             continue
         ema_fast = s.ewm(span=20, adjust=False).mean()
@@ -211,8 +216,11 @@ def _b1_ta_result(
         pct = s.pct_change().fillna(0.0)
         gross = pct * pos.shift(1).fillna(0.0)
         net = _apply_position_costs(pos, gross, buy_fee, sell_fee)
-        frames.append(net.rename(str(ticker).upper()))
-        gross_frames.append(gross.rename(str(ticker).upper()))
+        oos = (net.index >= start_date) & (net.index <= end_date)
+        if not oos.any():
+            continue
+        frames.append(net.loc[oos].rename(str(ticker).upper()))
+        gross_frames.append(gross.loc[oos].rename(str(ticker).upper()))
     if not frames:
         return {
             "equity_curve": [],
@@ -248,7 +256,11 @@ def _b2_canslim_result(
     end_date: str,
     config: dict,
 ) -> dict:
-    """Baseline B2 — CANSLIM rút gọn + cost khi rebalance (T+1 lag)."""
+    """Baseline B2 — CANSLIM rút gọn + cost khi rebalance (T+1 lag).
+
+    RS ``shift(126)`` tính trên chuỗi có warmup; equity/metrics chỉ báo cáo
+    trong cửa sổ ``[start_date, end_date]``.
+    """
     import pandas as pd
 
     from backtest.metrics import compute_metrics
@@ -258,7 +270,8 @@ def _b2_canslim_result(
     for ticker, series in close_by_ticker.items():
         s = pd.to_numeric(series, errors="coerce").dropna()
         s.index = s.index.astype(str)
-        s = s.loc[(s.index >= start_date) & (s.index <= end_date)]
+        # Giữ lịch sử trước start_date cho RS 126 phiên; cắt sau end_date.
+        s = s.loc[s.index <= end_date]
         if not s.empty:
             frames.append(s.rename(str(ticker).upper()))
     if not frames:
@@ -288,7 +301,9 @@ def _b2_canslim_result(
             if col in weights.columns:
                 weights.loc[slice_idx, col] = w
         if chosen != prev_set:
-            n_trades += len(chosen.symmetric_difference(prev_set))
+            # Chỉ đếm rebalance trong cửa sổ báo cáo OOS.
+            if day >= start_date:
+                n_trades += len(chosen.symmetric_difference(prev_set))
             prev_set = chosen
     rets = prices.pct_change().fillna(0.0)
     w_lag = weights.shift(1).fillna(0.0)
@@ -299,6 +314,16 @@ def _b2_canslim_result(
     # Mua tăng + bán giảm ≈ turnover; chia đôi buy/sell fee xấp xỉ
     cost = delta_w * ((buy_fee + sell_fee) / 2.0)
     port = port_gross - cost.fillna(0.0)
+    oos = (port.index >= start_date) & (port.index <= end_date)
+    port = port.loc[oos]
+    port_gross = port_gross.loc[oos]
+    if port.empty:
+        return {
+            "equity_curve": [],
+            "trades": [],
+            "metrics": compute_metrics([], [], config),
+            "signals": [],
+        }
     equity = (1.0 + port).cumprod()
     equity_gross = (1.0 + port_gross).cumprod()
     curve = [{"date": str(d), "equity": float(v)} for d, v in equity.items()]

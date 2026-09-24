@@ -590,3 +590,37 @@ Chỉ display layer (`bot/formatters.py` + handlers `bot/main.py`); **không** �
 | **Wording BCTC** | Tần suất job: «rà lại định kỳ (~3 tháng/lần) xem có BCTC NĂM mới»; không dùng «lịch quý» khi nói tần suất. Loại báo cáo vẫn là BCTC năm. |
 | **Collapse** | `/check` tin đầu cắt trước ``── Chi tiết ──``; số thô (t-stat, EPS…) sau ``chk:detail``. `/signals` opener chỉ đếm + khí hậu; danh sách sau ``sig:BUY|WATCH|SELL``. `/watchlist` / `/positions` tương tự (``wl:*``, ``pos:detail``). |
 | **Artifact backtest** | FINAL chính thức: ``store/backtest_final_vn100_20260924_n5.json`` (sau OOS optional N=5; xem mục trên). p22 giữ làm baseline trước ``refit_every_n=5``. |
+
+### Button-first navigation Telegram (2026-09-24)
+
+Chỉ display/navigation (`bot/formatters.py` + `bot/main.py`); **không** đổi chiến lược Quant/Fundamental/backtest.
+
+| Mục | Quyết định |
+|---|---|
+| **Menu chính** | `/start` dùng InlineKeyboard 8 nút (`build_main_menu_keyboard`); bỏ ReplyKeyboard. |
+| **Home** | Mọi keyboard chính có ``nav:home`` → edit về `format_home_text` + menu. |
+| **Ticker** | ``nav:check_prompt`` set ``awaiting_ticker``; input sai khi đang chờ → feedback (không im lặng). |
+| **Check charts** | ``chk:risk`` / ``chk:prob`` chỉ hiện khi store có dữ liệu; render chart có sẵn, không fit. |
+| **Thông báo** | ``nav:notifications`` + ``sub:on``/``sub:off``; giữ `/subscribe` `/unsubscribe`. |
+| **Rổ Fund** | ``nav:watchlist`` / `/watchlist` = 4 nhóm từ ``fundamental_scores`` (PIT); wording «Rổ lọc doanh nghiệp». |
+
+### P0-NEW-4 — B2 lookback buffer (2026-09-24)
+
+**Root cause:** ``_b2_canslim_result`` / ``_b1_ta_result`` trong ``backtest/ablation.py`` cắt closes về ``[oos_start, oos_end]`` **trước** khi tính RS ``shift(126)`` / EMA50. Bundle đã load warmup 3y nhưng bị hàm baseline vứt đi → cửa sổ ~6 tháng OOS: RS gần như toàn NaN → B2 ``n_trades=0``, Sharpe ``None`` (khớp n5 và các FINAL từ ``fast_dev`` trở đi).
+
+**Patch:** tính RS/EMA trên full series (giữ warmup); chỉ cắt equity/metrics/n_trades báo cáo về ``[start_date, end_date]``. Không đổi luật CANSLIM / cost / T+1.
+
+**FINAL xác nhận** (cùng protocol n5): VN100, ``--with-fundamentals``, ``signal_every=1``, OOS ``2025-03-22``→``2025-09-22``, warmup 3y, ``--no-walk-forward``. Artifact: ``store/backtest_final_vn100_20260924_b2fix.json`` (log ``store/backtest_final_vn100_20260924_b2fix.run.log``; ``EXIT_CODE=0``).
+
+| Metric | n5 (trước fix) | b2fix (sau fix) |
+|---|---|---|
+| B2 ``n_trades`` | **0** | **120** |
+| B2 Sharpe | ``None`` | **2.04** |
+| B2 CAGR | 0 | **+66.6%** |
+| Framework Sharpe | 0.479 | 0.458 (Δ −0.021) |
+| Framework ``n_trades`` | 101 | 102 |
+| Ablation risk Sharpe / n | 0.517 / 100 | **giống hệt** 0.517 / 100 |
+
+``|ΔSharpe Framework| = 0.021 ≤ 0.10`` (biên nhiễu chấp nhận; layer risk/alpha ablation **không đổi**). B1 Sharpe đổi vì EMA giờ warmup đúng (trước đó cold-start trong OOS).
+
+**Quyết định:** P0-NEW-4 đóng. Artifact chính thức Framework/GARCH N=5 **giữ** ``store/backtest_final_vn100_20260924_n5.json``; ``b2fix`` là chứng nhận baseline B2. Không cook ngưỡng; không đổi UX.

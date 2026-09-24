@@ -296,7 +296,7 @@ def test_build_scoring_schedule_keys(monkeypatch, tmp_path):
 
     calls: list[tuple[int, int]] = []
 
-    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db"):
+    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db", **kwargs):
         calls.append((start_year, end_year))
         import pandas as pd
 
@@ -625,6 +625,73 @@ def test_b1_b2_baseline_runners_finite():
     # Net <= gross after costs
     assert b1["metrics"]["net_total_return"] <= b1["metrics"]["gross_total_return"] + 1e-9
     assert b2["metrics"]["net_total_return"] <= b2["metrics"]["gross_total_return"] + 1e-9
+
+
+def test_b2_lookback_buffer_short_oos_trades():
+    """P0-NEW-4: ≥150 phiên warmup trước OOS ~6 tháng → B2 n_trades > 0, Sharpe hữu hạn."""
+    import math
+
+    import numpy as np
+
+    from backtest.ablation import _b1_ta_result, _b2_canslim_result
+
+    rng = np.random.default_rng(42)
+    # ~150 phiên warmup + ~126 phiên OOS (~6 tháng)
+    warmup = 160
+    oos = 130
+    n = warmup + oos
+    dates = pd.bdate_range("2024-01-02", periods=n).astype(str)
+    oos_start = str(dates[warmup])
+    oos_end = str(dates[-1])
+    closes = {}
+    for i, tkr in enumerate(["AAA", "BBB", "CCC", "DDD"]):
+        drift = 0.0003 + 0.0002 * i
+        closes[tkr] = pd.Series(
+            40.0 * np.exp(np.cumsum(rng.normal(drift, 0.02, n))),
+            index=dates,
+        )
+    cfg = {
+        "quant_engine": {"sigma_target": 0.02},
+        "backtest": {"cost": {"tax_sell_pct": 0.001, "fee_roundtrip_pct": 0.003}},
+    }
+    b2 = _b2_canslim_result(closes, oos_start, oos_end, cfg)
+    assert b2["metrics"]["n_trades"] > 0
+    sharpe = b2["metrics"].get("sharpe")
+    assert sharpe is not None and math.isfinite(float(sharpe))
+    assert len(b2["equity_curve"]) > 50
+    # Equity chỉ trong cửa sổ OOS
+    assert all(oos_start <= p["date"] <= oos_end for p in b2["equity_curve"])
+    # B1 cũng dùng buffer — curve trong OOS, metrics hữu hạn
+    b1 = _b1_ta_result(closes, oos_start, oos_end, cfg)
+    assert len(b1["equity_curve"]) > 50
+    assert all(oos_start <= p["date"] <= oos_end for p in b1["equity_curve"])
+    assert b1["metrics"]["net_total_return"] <= b1["metrics"]["gross_total_return"] + 1e-9
+
+
+def test_b2_no_lookback_buffer_safe_empty():
+    """Không có buffer trước OOS → B2 an toàn (0 trades / metric rỗng), không crash."""
+    import numpy as np
+
+    from backtest.ablation import _b2_canslim_result
+
+    rng = np.random.default_rng(1)
+    # Chỉ ~80 phiên trong OOS — không đủ shift(126)
+    dates = pd.bdate_range("2025-03-22", periods=80).astype(str)
+    closes = {
+        "AAA": pd.Series(
+            50 * np.exp(np.cumsum(rng.normal(0.0005, 0.02, 80))), index=dates
+        ),
+        "BBB": pd.Series(
+            40 * np.exp(np.cumsum(rng.normal(0.0003, 0.018, 80))), index=dates
+        ),
+    }
+    cfg = {
+        "quant_engine": {"sigma_target": 0.02},
+        "backtest": {"cost": {"tax_sell_pct": 0.001, "fee_roundtrip_pct": 0.003}},
+    }
+    b2 = _b2_canslim_result(closes, str(dates[0]), str(dates[-1]), cfg)
+    assert isinstance(b2["metrics"], dict)
+    assert b2["metrics"].get("n_trades", 0) == 0
 
 
 def test_stop_overrides_quant_buy(monkeypatch):
@@ -1108,7 +1175,7 @@ def test_build_scoring_schedule_cache_hit_log(monkeypatch, tmp_path, capsys):
 
     calls: list[tuple[int, int]] = []
 
-    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db"):
+    def fake_build(tickers, start_year, end_year, config=None, db_path="store/bot.db", **kwargs):
         calls.append((start_year, end_year))
         import pandas as pd
 

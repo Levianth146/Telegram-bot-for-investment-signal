@@ -266,6 +266,10 @@ def test_formatters_regime_and_check():
     # UX Redesign: không lặp EOD ở /start
     assert "không realtime" not in welcome.casefold()
     assert formatters.DISCLAIMER in welcome
+    home = formatters.format_home_text()
+    assert "Menu chính" in home
+    assert "/subscribe" not in home
+    assert formatters.DISCLAIMER in home
     help_txt = formatters.format_help()
     assert "/check <mã>" in help_txt and "Tham khảo thêm" in help_txt
     assert "Khám phá thị trường" in help_txt
@@ -708,26 +712,33 @@ def test_signals_pagination_edges():
         for row in kb.inline_keyboard:
             for btn in row:
                 assert len(btn.callback_data.encode("utf-8")) <= 64
-                assert btn.callback_data.startswith("page:signals:")
+                assert btn.callback_data.startswith("page:signals:") or (
+                    btn.callback_data == "nav:home"
+                )
 
 
 def test_backtest_and_regime_and_start_keyboards():
-    """Nút /backtest, /regime, /start — callback ngắn; ReplyKeyboard có lệnh."""
+    """Nút /backtest, /regime, /start — callback ngắn; Inline menu chính (button-first)."""
     bt = formatters.build_backtest_keyboard("run_demo_20260923")
     cbs = [b.callback_data for row in bt.inline_keyboard for b in row]
     assert any(c.startswith("bt:b0:") for c in cbs)
     assert any(c.startswith("bt:yearly:") for c in cbs)
     assert any(c.startswith("bt:checks:") for c in cbs)
+    assert "nav:home" in cbs
     assert all(len(c.encode("utf-8")) <= 64 for c in cbs)
 
     rg = formatters.build_regime_keyboard()
-    assert rg.inline_keyboard[0][0].callback_data == "nav:signals"
+    rg_cbs = [b.callback_data for row in rg.inline_keyboard for b in row]
+    assert "nav:signals" in rg_cbs
+    assert "nav:sector" in rg_cbs
+    assert "nav:home" in rg_cbs
 
-    start_kb = formatters.build_start_reply_keyboard()
-    labels = [b.text for row in start_kb.keyboard for b in row]
-    assert "/check" in labels and "/signals" in labels
-    assert "/regime" in labels and "/positions" in labels
-    assert "/tinhtrangdulieu" in labels
+    start_kb = formatters.build_main_menu_keyboard()
+    start_cbs = [b.callback_data for row in start_kb.inline_keyboard for b in row]
+    assert len(start_cbs) == 8
+    assert "nav:signals" in start_cbs and "nav:check_prompt" in start_cbs
+    assert "nav:notifications" in start_cbs and "nav:help" in start_cbs
+    assert all(len(c.encode("utf-8")) <= 64 for c in start_cbs)
 
 
 def test_callback_handler_answers_and_no_network(tmp_path, monkeypatch):

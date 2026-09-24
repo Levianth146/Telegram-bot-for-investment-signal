@@ -633,7 +633,7 @@ def _headline_block_lines(fundamental_row: Mapping[str, Any]) -> list[str]:
 
 
 def format_welcome() -> str:
-    """/start — mockup UX Redesign: 3 nhánh gọn, không lặp EOD (đẩy sang /tinhtrangdulieu)."""
+    """/start legacy copy — giữ cho test/power-user; UI chính dùng ``format_home_text``."""
     return "\n".join(
         [
             "🤖 Bot tín hiệu đầu tư VN — trợ lý phân tích cổ phiếu VN (sản phẩm học thuật)",
@@ -651,6 +651,65 @@ def format_welcome() -> str:
             "   └ /watchlist — rổ mã đã qua vòng lọc doanh nghiệp",
             "",
             "ⓘ /help — đầy đủ lệnh · /tinhtrangdulieu — dữ liệu cập nhật khi nào",
+            DISCLAIMER,
+        ]
+    )
+
+
+def format_home_text() -> str:
+    """Màn Menu chính (button-first) — ngắn, không dump danh sách lệnh."""
+    return "\n".join(
+        [
+            "🏠 Menu chính",
+            "",
+            "Chọn một nút bên dưới — không cần nhớ lệnh.",
+            "Hoặc gõ mã 3 ký tự (vd FPT) để phân tích nhanh.",
+            "",
+            DISCLAIMER,
+        ]
+    )
+
+
+def format_check_prompt_text() -> str:
+    """Sau nút «Phân tích cổ phiếu» — chờ nhập mã."""
+    return "\n".join(
+        [
+            "🔎 Phân tích cổ phiếu",
+            "",
+            "✏️ Hãy nhập mã cổ phiếu. Ví dụ: FPT, HPG, VNM",
+            "",
+            DISCLAIMER,
+        ]
+    )
+
+
+def format_notifications_text(*, is_active: bool) -> str:
+    """Màn thông báo — trạng thái đăng ký push phiên mới."""
+    status = "ĐANG BẬT" if is_active else "ĐANG TẮT"
+    return "\n".join(
+        [
+            "🔔 Thông báo tín hiệu phiên mới",
+            "",
+            f"Trạng thái: {status}",
+            "",
+            "Khi bật, bot gửi tóm tắt sau mỗi phiên (khi pipeline chạy xong).",
+            "Bạn vẫn xem được bằng nút Tín hiệu / lệnh /signals bất cứ lúc nào.",
+            "",
+            DISCLAIMER,
+        ]
+    )
+
+
+def format_awaiting_ticker_invalid(text: str) -> str:
+    """Phản hồi khi đang chờ mã nhưng input không phải ticker 3 ký tự."""
+    raw = (text or "").strip()
+    return "\n".join(
+        [
+            "❌ Mã không hợp lệ.",
+            f"Bạn vừa gửi: «{raw[:40]}»" if raw else "Bạn chưa gửi mã.",
+            "",
+            "Nhập đúng 3 chữ cái (vd FPT, HPG, VNM) — hoặc bấm 🏠 Menu chính để hủy.",
+            "",
             DISCLAIMER,
         ]
     )
@@ -1077,6 +1136,119 @@ def format_watchlist(
         DISCLAIMER,
     ]
     return "\n".join(lines)
+
+
+# Rổ Fundamental 4 nhóm — đọc fundamental_scores (PIT), không suy FAIL từ watchlist.
+FUND_BASKET_GROUPS = ("PASS", "WATCH", "FAIL", "INSUFFICIENT")
+FUND_BASKET_PAGE_SIZE = 20
+_FUND_BASKET_LABELS = {
+    "PASS": "🟢 ĐẠT",
+    "WATCH": "🟡 THEO DÕI",
+    "FAIL": "🔴 KHÔNG ĐẠT",
+    "INSUFFICIENT": "⚪ THIẾU DỮ LIỆU",
+}
+
+
+def classify_fund_basket_group(row: Mapping[str, Any] | None) -> str:
+    """Gán nhóm PASS|WATCH|FAIL|INSUFFICIENT từ hàng fundamental_scores."""
+    if not row:
+        return "INSUFFICIENT"
+    if is_insufficient_fundamental(row):
+        return "INSUFFICIENT"
+    view = str(row.get("fundamental_view") or "").upper()
+    if view in ("PASS", "WATCH", "FAIL"):
+        return view
+    return "FAIL"
+
+
+def group_fundamental_scores(
+    score_rows: list[dict] | Mapping[str, dict],
+) -> dict[str, list[dict]]:
+    """Nhóm điểm cơ bản mới nhất theo 4 bucket (reuse ``is_insufficient_fundamental``)."""
+    groups: dict[str, list[dict]] = {g: [] for g in FUND_BASKET_GROUPS}
+    if isinstance(score_rows, Mapping):
+        iterable = list(score_rows.values())
+    else:
+        iterable = list(score_rows or [])
+    for row in iterable:
+        item = dict(row)
+        g = classify_fund_basket_group(item)
+        groups.setdefault(g, []).append(item)
+    for g in groups:
+        groups[g].sort(key=lambda r: str(r.get("ticker") or ""))
+    return groups
+
+
+def fund_basket_counts(groups: Mapping[str, list]) -> dict[str, int]:
+    """Đếm số mã mỗi nhóm rổ Fundamental."""
+    return {g: len(groups.get(g) or []) for g in FUND_BASKET_GROUPS}
+
+
+def format_fund_basket_summary(
+    counts: Mapping[str, int],
+    *,
+    as_of: str | None = None,
+) -> str:
+    """Opener «Rổ lọc doanh nghiệp» — 4 nhóm từ fundamental_scores."""
+    day = _fmt_day_vi(as_of) if as_of else "—"
+    lines = [
+        "📂 Rổ lọc doanh nghiệp — theo BCTC năm gần nhất đã công bố",
+        f"Ước tính ngày công bố: {day}",
+        "",
+        f"🟢 {int(counts.get('PASS') or 0)} mã ĐẠT",
+        f"🟡 {int(counts.get('WATCH') or 0)} mã THEO DÕI",
+        f"🔴 {int(counts.get('FAIL') or 0)} mã KHÔNG ĐẠT",
+        f"⚪ {int(counts.get('INSUFFICIENT') or 0)} mã THIẾU DỮ LIỆU",
+        "",
+        "Bấm nút bên dưới để xem danh sách từng nhóm.",
+        "Gõ mã 3 ký tự hoặc /check <mã> để phân tích chi tiết.",
+        "",
+        DISCLAIMER,
+    ]
+    return "\n".join(lines)
+
+
+def format_fund_basket_group(
+    rows: list[dict],
+    group: str,
+    *,
+    page: int = 0,
+    as_of: str | None = None,
+) -> str:
+    """Danh sách mã một nhóm rổ Fundamental (có phân trang)."""
+    g = str(group or "").upper()
+    label = _FUND_BASKET_LABELS.get(g, g)
+    n = len(rows)
+    total_pages = max(1, (n + FUND_BASKET_PAGE_SIZE - 1) // FUND_BASKET_PAGE_SIZE) if n else 1
+    page_i = max(0, min(int(page), total_pages - 1))
+    start = page_i * FUND_BASKET_PAGE_SIZE
+    chunk = rows[start : start + FUND_BASKET_PAGE_SIZE]
+    tickers = " · ".join(str(r.get("ticker") or "") for r in chunk) if chunk else "(trống)"
+    lines = [
+        f"📂 {label} — {n} mã",
+        f"Theo BCTC năm (ước tính công bố): {_fmt_day_vi(as_of)}",
+    ]
+    if n and total_pages > 1:
+        lines.append(f"Trang {page_i + 1}/{total_pages}")
+    lines.extend(
+        [
+            "",
+            tickers,
+            "",
+            "Gõ mã (vd FPT) hoặc /check <mã> để xem chi tiết.",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def fund_basket_total_pages(n_rows: int) -> int:
+    """Số trang danh sách nhóm rổ Fundamental."""
+    n = max(0, int(n_rows))
+    if n <= 0:
+        return 1
+    return max(1, (n + FUND_BASKET_PAGE_SIZE - 1) // FUND_BASKET_PAGE_SIZE)
 
 
 def format_regime_message(
@@ -2564,12 +2736,12 @@ def format_status(
 
 
 # ---------------------------------------------------------------------------
-# Phần C — InlineKeyboard / ReplyKeyboard (chỉ điều hướng + đọc store)
+# Phần C — InlineKeyboard (button-first; không ReplyKeyboard)
 # ---------------------------------------------------------------------------
 
-# action ∈ {price, radar, ta, pnl, detail}; callback chk:<action>:<TICKER>
+# action ∈ {price, radar, ta, pnl, detail, risk, prob}; callback chk:<action>:<TICKER>
 # watch_add đã ẩn (Round 2) — không schema user_follows lần này.
-_CHECK_ACTIONS = frozenset({"price", "radar", "ta", "pnl", "detail"})
+_CHECK_ACTIONS = frozenset({"price", "radar", "ta", "pnl", "detail", "risk", "prob"})
 
 
 def _telegram_keyboard_imports():
@@ -2577,11 +2749,9 @@ def _telegram_keyboard_imports():
     from telegram import (
         InlineKeyboardButton,
         InlineKeyboardMarkup,
-        KeyboardButton,
-        ReplyKeyboardMarkup,
     )
 
-    return InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton, ReplyKeyboardMarkup
+    return InlineKeyboardButton, InlineKeyboardMarkup
 
 
 def assert_callback_data_ok(data: str) -> str:
@@ -2592,15 +2762,102 @@ def assert_callback_data_ok(data: str) -> str:
     return data
 
 
+def append_home_row(rows: list) -> list:
+    """Thêm hàng [🏠 Menu chính] (``nav:home``) vào cuối mọi keyboard."""
+    InlineKeyboardButton, _ = _telegram_keyboard_imports()
+    out = list(rows) if rows else []
+    out.append(
+        [
+            InlineKeyboardButton(
+                "🏠 Menu chính",
+                callback_data=assert_callback_data_ok("nav:home"),
+            )
+        ]
+    )
+    return out
+
+
+def build_main_menu_keyboard():
+    """Inline menu chính 8 nút (DOI_CHIEU §3.1 / md §16)."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    rows = [
+        [
+            InlineKeyboardButton(
+                "📊 Tín hiệu hôm nay",
+                callback_data=assert_callback_data_ok("nav:signals"),
+            ),
+            InlineKeyboardButton(
+                "🔎 Phân tích cổ phiếu",
+                callback_data=assert_callback_data_ok("nav:check_prompt"),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🌤 Thị trường hôm nay",
+                callback_data=assert_callback_data_ok("nav:regime"),
+            ),
+            InlineKeyboardButton(
+                "🏢 Rổ Fundamental",
+                callback_data=assert_callback_data_ok("nav:watchlist"),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "💼 Danh mục mô phỏng",
+                callback_data=assert_callback_data_ok("nav:positions"),
+            ),
+            InlineKeyboardButton(
+                "📈 Kết quả Backtest",
+                callback_data=assert_callback_data_ok("nav:backtest"),
+            ),
+        ],
+        [
+            InlineKeyboardButton(
+                "🔔 Thông báo",
+                callback_data=assert_callback_data_ok("nav:notifications"),
+            ),
+            InlineKeyboardButton(
+                "❓ Hướng dẫn",
+                callback_data=assert_callback_data_ok("nav:help"),
+            ),
+        ],
+    ]
+    return InlineKeyboardMarkup(rows)
+
+
+def build_home_only_keyboard():
+    """Chỉ nút Home — dùng khi màn không có nút khác."""
+    _, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    return InlineKeyboardMarkup(append_home_row([]))
+
+
+def build_notifications_keyboard(*, is_active: bool):
+    """Một nút bật/tắt đăng ký + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    if is_active:
+        toggle = InlineKeyboardButton(
+            "🔕 Tắt thông báo",
+            callback_data=assert_callback_data_ok("sub:off"),
+        )
+    else:
+        toggle = InlineKeyboardButton(
+            "🔔 Bật thông báo",
+            callback_data=assert_callback_data_ok("sub:on"),
+        )
+    return InlineKeyboardMarkup(append_home_row([[toggle]]))
+
+
 def check_keyboard_rows(
     state: str,
     ticker: str,
     *,
     has_price_bars: bool = False,
+    has_risk_chart: bool = False,
+    has_prob_chart: bool = False,
 ) -> list[list[tuple[str, str]]]:
     """Sinh hàng nút /check theo state (C-2) — chưa bọc InlineKeyboardMarkup.
 
-    Trả về ``[[(label, callback_data), ...], ...]``.
+    Trả về ``[[(label, callback_data), ...], ...]``. Không gồm Home (thêm ở build_*).
     """
     t = ticker.strip().upper()
     rows: list[list[tuple[str, str]]] = []
@@ -2643,13 +2900,28 @@ def check_keyboard_rows(
         if has_price_bars:
             _add("📈 TA tham khảo", "ta")
 
+    # Phase C: risk/prob chỉ hiện khi store có dữ liệu chart (không network/fit).
+    if has_risk_chart and state in (
+        CHECK_WATCH,
+        CHECK_PASS_NO_SIGNAL,
+        CHECK_PASS,
+        CHECK_POSITION,
+        CHECK_FAIL,
+    ):
+        _add("📉 Dải rủi ro", "risk")
+    if has_prob_chart and state in (
+        CHECK_WATCH,
+        CHECK_PASS_NO_SIGNAL,
+        CHECK_PASS,
+        CHECK_POSITION,
+    ):
+        _add("🎲 Phân phối MC", "prob")
+
     if row:
-        # Telegram: tối đa ~8 nút/hàng; tách 2 hàng nếu dài.
-        if len(row) <= 3:
-            rows.append(row)
-        else:
-            rows.append(row[:2])
-            rows.append(row[2:])
+        # Telegram: tối đa ~8 nút/hàng; tách hàng nếu dài.
+        while row:
+            rows.append(row[:3])
+            row = row[3:]
     return rows
 
 
@@ -2658,18 +2930,23 @@ def build_check_keyboard(
     ticker: str,
     *,
     has_price_bars: bool = False,
+    has_risk_chart: bool = False,
+    has_prob_chart: bool = False,
 ):
-    """InlineKeyboard dưới kết quả /check — không đổi ``resolve_check_state``."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
-    spec = check_keyboard_rows(state, ticker, has_price_bars=has_price_bars)
-    if not spec:
-        return None
-    return InlineKeyboardMarkup(
-        [
-            [InlineKeyboardButton(text=lab, callback_data=cb) for lab, cb in r]
-            for r in spec
-        ]
+    """InlineKeyboard dưới kết quả /check — luôn có Home; không đổi ``resolve_check_state``."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    spec = check_keyboard_rows(
+        state,
+        ticker,
+        has_price_bars=has_price_bars,
+        has_risk_chart=has_risk_chart,
+        has_prob_chart=has_prob_chart,
     )
+    rows = [
+        [InlineKeyboardButton(text=lab, callback_data=cb) for lab, cb in r]
+        for r in spec
+    ]
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_signals_opener_keyboard(
@@ -2679,7 +2956,7 @@ def build_signals_opener_keyboard(
     n_sell: int,
 ):
     """Tin đầu /signals — nút mở từng nhóm + /regime (UX Redesign collapse)."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
     row: list = []
     if n_buy > 0:
         row.append(
@@ -2703,7 +2980,6 @@ def build_signals_opener_keyboard(
             )
         )
     rows = []
-    # Telegram: tối đa ~3 nút/hàng cho dễ đọc.
     if row:
         if len(row) <= 2:
             rows.append(row)
@@ -2718,7 +2994,7 @@ def build_signals_opener_keyboard(
             )
         ]
     )
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_signals_keyboard(
@@ -2727,22 +3003,20 @@ def build_signals_keyboard(
     *,
     action_filter: str | None = None,
 ):
-    """Nút ◀ / Trang X/Y / ▶ — ``page:signals:<n>`` hoặc ``sig:<ACT>:<n>``."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    """Nút ◀ / Trang X/Y / ▶ — ``page:signals:<n>`` hoặc ``sig:<ACT>:<n>`` + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    rows: list = []
     if total_pages <= 1:
-        # Vẫn cho nút quay lại opener khi đang xem 1 nhóm.
         if action_filter:
-            return InlineKeyboardMarkup(
+            rows.append(
                 [
-                    [
-                        InlineKeyboardButton(
-                            "← Tóm tắt /signals",
-                            callback_data=assert_callback_data_ok("sig:summary"),
-                        )
-                    ]
+                    InlineKeyboardButton(
+                        "← Tóm tắt /signals",
+                        callback_data=assert_callback_data_ok("sig:summary"),
+                    )
                 ]
             )
-        return None
+        return InlineKeyboardMarkup(append_home_row(rows))
     page_i = max(0, min(int(page), total_pages - 1))
     filt = str(action_filter or "").upper() or None
     row = []
@@ -2776,12 +3050,12 @@ def build_signals_keyboard(
                 )
             ]
         )
-    return InlineKeyboardMarkup(rows)
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_watchlist_keyboard(*, n_pass: int, n_watch: int):
-    """Nút ▾ Xem danh sách ĐẠT / THEO DÕI."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    """Legacy nút ▾ ĐẠT / THEO DÕI (watchlist table) + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
     row = []
     if n_pass > 0:
         row.append(
@@ -2797,31 +3071,101 @@ def build_watchlist_keyboard(*, n_pass: int, n_watch: int):
                 callback_data=assert_callback_data_ok("wl:WATCH"),
             )
         )
-    if not row:
-        return None
-    return InlineKeyboardMarkup([row])
+    rows = [row] if row else []
+    return InlineKeyboardMarkup(append_home_row(rows))
+
+
+def build_fund_basket_opener_keyboard(counts: Mapping[str, int]):
+    """Opener rổ Fundamental 4 nhóm + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    labels = {
+        "PASS": ("▾ ĐẠT", "PASS"),
+        "WATCH": ("▾ THEO DÕI", "WATCH"),
+        "FAIL": ("▾ KHÔNG ĐẠT", "FAIL"),
+        "INSUFFICIENT": ("▾ THIẾU DL", "INSUFFICIENT"),
+    }
+    row: list = []
+    for key in FUND_BASKET_GROUPS:
+        n = int(counts.get(key) or 0)
+        if n <= 0:
+            continue
+        lab, g = labels[key]
+        row.append(
+            InlineKeyboardButton(
+                f"{lab} ({n})",
+                callback_data=assert_callback_data_ok(f"fund:{g}:0"),
+            )
+        )
+    rows: list = []
+    while row:
+        rows.append(row[:2])
+        row = row[2:]
+    return InlineKeyboardMarkup(append_home_row(rows))
+
+
+def build_fund_basket_keyboard(
+    group: str,
+    page: int,
+    total_pages: int,
+):
+    """Phân trang nhóm rổ Fundamental + về opener + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    g = str(group or "").upper()
+    rows: list = []
+    if total_pages > 1:
+        page_i = max(0, min(int(page), total_pages - 1))
+        nav_row = []
+        if page_i > 0:
+            nav_row.append(
+                InlineKeyboardButton(
+                    "◀ Trước",
+                    callback_data=assert_callback_data_ok(f"fund:{g}:{page_i - 1}"),
+                )
+            )
+        nav_row.append(
+            InlineKeyboardButton(
+                f"Trang {page_i + 1}/{total_pages}",
+                callback_data=assert_callback_data_ok(f"fund:{g}:{page_i}"),
+            )
+        )
+        if page_i < total_pages - 1:
+            nav_row.append(
+                InlineKeyboardButton(
+                    "Tiếp ▶",
+                    callback_data=assert_callback_data_ok(f"fund:{g}:{page_i + 1}"),
+                )
+            )
+        rows.append(nav_row)
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "← Tóm tắt rổ",
+                callback_data=assert_callback_data_ok("fund:summary"),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_positions_keyboard(*, has_rows: bool):
-    """Nút ▾ Xem chi tiết từng mã (giá vào, cắt lỗ)."""
-    if not has_rows:
-        return None
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
-    return InlineKeyboardMarkup(
-        [
+    """Nút ▾ Xem chi tiết từng mã + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    rows: list = []
+    if has_rows:
+        rows.append(
             [
                 InlineKeyboardButton(
                     "▾ Xem chi tiết từng mã (giá vào, cắt lỗ)",
                     callback_data=assert_callback_data_ok("pos:detail"),
                 )
             ]
-        ]
-    )
+        )
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_backtest_keyboard(run_id: str):
     """View switcher /backtest — ``bt:<view>:<run_id>``; chỉ đọc store khi bấm."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
     rid = str(run_id or "latest")[:40]
     views = (
         ("So B0", "b0"),
@@ -2834,43 +3178,28 @@ def build_backtest_keyboard(run_id: str):
     for label, view in views:
         cb = assert_callback_data_ok(f"bt:{view}:{rid}")
         buttons.append(InlineKeyboardButton(label, callback_data=cb))
-    # 3 + 2 hàng cho dễ bấm trên mobile
-    return InlineKeyboardMarkup([buttons[:3], buttons[3:]])
+    rows = [buttons[:3], buttons[3:]]
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def build_regime_keyboard():
-    """Nút điều hướng /regime → logic /signals."""
-    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
-    return InlineKeyboardMarkup(
+    """Nút /regime → signals + sector + Home."""
+    InlineKeyboardButton, InlineKeyboardMarkup = _telegram_keyboard_imports()
+    rows = [
         [
-            [
-                InlineKeyboardButton(
-                    "Xem /signals theo mã →",
-                    callback_data=assert_callback_data_ok("nav:signals"),
-                )
-            ]
-        ]
-    )
-
-
-def build_start_reply_keyboard():
-    """ReplyKeyboard cố định cho /start — gồm nút Tình trạng dữ liệu (Round2)."""
-    _, _, KeyboardButton, ReplyKeyboardMarkup = _telegram_keyboard_imports()
-    return ReplyKeyboardMarkup(
-        [
-            [
-                KeyboardButton("/check"),
-                KeyboardButton("/signals"),
-                KeyboardButton("/regime"),
-            ],
-            [
-                KeyboardButton("/positions"),
-                KeyboardButton("/tinhtrangdulieu"),
-            ],
+            InlineKeyboardButton(
+                "Xem /signals theo mã →",
+                callback_data=assert_callback_data_ok("nav:signals"),
+            )
         ],
-        resize_keyboard=True,
-        one_time_keyboard=False,
-    )
+        [
+            InlineKeyboardButton(
+                "🏭 Xem theo ngành",
+                callback_data=assert_callback_data_ok("nav:sector"),
+            )
+        ],
+    ]
+    return InlineKeyboardMarkup(append_home_row(rows))
 
 
 def format_backtest_checks_only(

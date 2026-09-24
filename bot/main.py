@@ -283,14 +283,18 @@ def build_application(token: str):
     log = logging.getLogger("bot.main")
 
     async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        # ReplyKeyboard: điền lệnh thường dùng vào ô chat (không phải InlineKeyboard).
+        # Button-first: Inline menu chính — không ReplyKeyboard (DOI_CHIEU §3.1).
+        context.user_data.pop("awaiting_ticker", None)
         await update.message.reply_text(
-            formatters.format_welcome(),
-            reply_markup=formatters.build_start_reply_keyboard(),
+            formatters.format_home_text(),
+            reply_markup=formatters.build_main_menu_keyboard(),
         )
 
     async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        await update.message.reply_text(formatters.format_help())
+        await update.message.reply_text(
+            formatters.format_help(),
+            reply_markup=formatters.build_home_only_keyboard(),
+        )
 
     async def about(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text(
@@ -300,8 +304,47 @@ def build_application(token: str):
             "bạn đọc bằng lệnh Telegram.\n"
             "Bot không tự tính lại mô hình và không khuyến nghị đầu tư.\n\n"
             "Gõ /help để xem cách dùng từng lệnh.\n\n"
-            + formatters.DISCLAIMER
+            + formatters.DISCLAIMER,
+            reply_markup=formatters.build_home_only_keyboard(),
         )
+
+    def _clear_awaiting_ticker(context: ContextTypes.DEFAULT_TYPE) -> None:
+        context.user_data.pop("awaiting_ticker", None)
+
+    async def _edit_or_reply(
+        target: Any,
+        text: str,
+        *,
+        reply_markup: Any = None,
+        edit: bool = False,
+    ) -> None:
+        """Gửi text: ưu tiên edit_message_text khi ``edit``, không thì reply_text."""
+        kwargs: dict[str, Any] = {}
+        if reply_markup is not None:
+            kwargs["reply_markup"] = reply_markup
+        if edit and hasattr(target, "edit_message_text"):
+            try:
+                await target.edit_message_text(text, **kwargs)
+                return
+            except Exception:  # noqa: BLE001
+                log.debug("edit_message_text failed — fallback reply", exc_info=True)
+        message = getattr(target, "message", None) or target
+        if message is None:
+            return
+        await message.reply_text(text, **kwargs)
+
+    def _signal_has_prob_chart(signal: dict | None) -> bool:
+        """True khi reason_json đã có outcomes Monte Carlo (bot không fit)."""
+        if not signal or not signal.get("reason_json"):
+            return False
+        import json as _json
+
+        try:
+            reason = _json.loads(str(signal["reason_json"]))
+        except _json.JSONDecodeError:
+            return False
+        outcomes = reason.get("mc_outcomes") or reason.get("monte_carlo_outcomes")
+        return isinstance(outcomes, list) and bool(outcomes)
 
     async def _send_signals_summary(*, reply_target: Any, edit: bool = False) -> None:
         """Tin đầu /signals — chỉ tóm tắt; danh sách sau nút sig:BUY|WATCH|SELL."""
@@ -365,40 +408,266 @@ def build_application(token: str):
     async def signals_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await _send_signals_summary(reply_target=update, edit=False)
 
-    async def watchlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        rows = read_watchlist()
-        text = formatters.format_watchlist(rows)
-        n_pass = sum(
-            1 for r in rows if str(r.get("fundamental_view", "")).upper() == "PASS"
-        )
-        n_watch = sum(
-            1 for r in rows if str(r.get("fundamental_view", "")).upper() == "WATCH"
-        )
-        kb = formatters.build_watchlist_keyboard(n_pass=n_pass, n_watch=n_watch)
-        await update.message.reply_text(text, reply_markup=kb)
-
-    async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def _show_regime(*, reply_target: Any, edit: bool = False) -> None:
         p_bull, as_of, prev_p = read_regime()
-        await update.message.reply_text(
+        await _edit_or_reply(
+            reply_target,
             formatters.format_regime_message(
                 p_bull, as_of, prev_p_bull=prev_p
             ),
             reply_markup=formatters.build_regime_keyboard(),
+            edit=edit,
         )
 
-    async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        # Phần 4: /check = text + keyboard only; chart PNG chỉ qua on_callback.
-        from bot.ta_reference import ta_indicators_from_closes
+    async def _show_fund_basket(*, reply_target: Any, edit: bool = False) -> None:
+        """Rổ lọc doanh nghiệp 4 nhóm từ fundamental_scores (PIT)."""
+        conn = _conn()
+        try:
+            scores = repository.get_latest_fundamental_scores(conn)
+            as_of = None
+            if scores:
+                filed = [
+                    str(r.get("filed_at") or "")[:10]
+                    for r in scores.values()
+                    if r.get("filed_at")
+                ]
+                as_of = max(filed) if filed else None
+        finally:
+            conn.close()
+        groups = formatters.group_fundamental_scores(scores)
+        counts = formatters.fund_basket_counts(groups)
+        text = formatters.format_fund_basket_summary(counts, as_of=as_of)
+        kb = formatters.build_fund_basket_opener_keyboard(counts)
+        await _edit_or_reply(reply_target, text, reply_markup=kb, edit=edit)
 
-        if not context.args:
-            await update.message.reply_text(
-                "Cú pháp: /check <mã>\n"
-                "Ví dụ: /check FPT\n\n"
-                "Luồng: dữ liệu → Fundamental → Quant/Risk (nếu đủ) → "
-                "ưu tiên vị thế nếu đang nắm giấy."
+    async def _show_fund_basket_group(
+        *,
+        reply_target: Any,
+        group: str,
+        page: int = 0,
+        edit: bool = False,
+    ) -> None:
+        conn = _conn()
+        try:
+            scores = repository.get_latest_fundamental_scores(conn)
+            as_of = None
+            if scores:
+                filed = [
+                    str(r.get("filed_at") or "")[:10]
+                    for r in scores.values()
+                    if r.get("filed_at")
+                ]
+                as_of = max(filed) if filed else None
+        finally:
+            conn.close()
+        groups = formatters.group_fundamental_scores(scores)
+        g = str(group or "").upper()
+        rows = groups.get(g) or []
+        total = formatters.fund_basket_total_pages(len(rows))
+        page_i = max(0, min(int(page), total - 1))
+        text = formatters.format_fund_basket_group(
+            rows, g, page=page_i, as_of=as_of
+        )
+        kb = formatters.build_fund_basket_keyboard(g, page_i, total)
+        await _edit_or_reply(reply_target, text, reply_markup=kb, edit=edit)
+
+    async def _show_positions(*, reply_target: Any, edit: bool = False) -> None:
+        conn = _conn()
+        try:
+            rows = repository.get_open_positions(conn)
+            signals = repository.get_latest_signals(conn)
+            as_of = str(signals[0]["date"])[:10] if signals else None
+            last_closes: dict[str, float] = {}
+            for row in rows:
+                t = str(row.get("ticker") or "").strip().upper()
+                if not t:
+                    continue
+                closes = repository.get_price_closes(conn, t, limit_days=5)
+                if closes and closes[-1].get("close") is not None:
+                    try:
+                        last_closes[t] = float(closes[-1]["close"])
+                    except (TypeError, ValueError):
+                        pass
+                    if as_of is None and closes[-1].get("date"):
+                        as_of = str(closes[-1]["date"])[:10]
+        finally:
+            conn.close()
+        await _edit_or_reply(
+            reply_target,
+            formatters.format_positions(
+                rows,
+                w_max=_load_w_max(),
+                last_closes=last_closes,
+                as_of=as_of,
+            ),
+            reply_markup=formatters.build_positions_keyboard(has_rows=bool(rows)),
+            edit=edit,
+        )
+
+    async def _show_backtest(
+        *,
+        reply_target: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        scope: str = "portfolio",
+        edit: bool = False,
+    ) -> None:
+        conn = _conn()
+        try:
+            rows = repository.get_backtest_results(conn, scope)
+            scopes = repository.list_backtest_scopes(conn)
+            run_id_preview = str(rows[0]["run_id"]) if rows else None
+            checks = (
+                repository.get_backtest_checks(
+                    conn, scope, "framework", run_id_preview
+                )
+                if run_id_preview
+                else []
+            )
+            yearly = (
+                repository.get_yearly_breakdown(
+                    conn, scope, "framework", run_id_preview
+                )
+                if run_id_preview
+                else []
+            )
+        finally:
+            conn.close()
+        context.user_data["bt_scope"] = scope
+        bt_kb = formatters.build_home_only_keyboard()
+        if rows:
+            run_id = str(rows[0].get("run_id") or "latest")
+            context.user_data["bt_run_id"] = run_id
+            bt_kb = formatters.build_backtest_keyboard(run_id)
+        text = formatters.format_backtest_results(
+            rows,
+            scope,
+            available_scopes=scopes,
+            checks=checks,
+            yearly=yearly,
+        )
+        if edit:
+            await _edit_or_reply(reply_target, text, reply_markup=bt_kb, edit=True)
+            return
+        # Command path: chunk + markup (giống reply_text_safe).
+        update_like = reply_target
+        await reply_text_safe(update_like, text, reply_markup=bt_kb)
+
+    async def _show_notifications(
+        *,
+        reply_target: Any,
+        chat_id: int,
+        edit: bool = False,
+    ) -> None:
+        conn = _conn()
+        try:
+            active = repository.is_subscriber_active(conn, chat_id)
+        finally:
+            conn.close()
+        await _edit_or_reply(
+            reply_target,
+            formatters.format_notifications_text(is_active=active),
+            reply_markup=formatters.build_notifications_keyboard(is_active=active),
+            edit=edit,
+        )
+
+    async def _show_sector(
+        *,
+        reply_target: Any,
+        industry_filter: str = "",
+        edit: bool = False,
+        send_chart: bool = True,
+    ) -> None:
+        flags = _load_config_flags()
+        home_kb = formatters.build_home_only_keyboard()
+        if not flags.get("sector_overview_command", False):
+            await _edit_or_reply(
+                reply_target,
+                "Lệnh /sector đang tắt trong cấu hình.\n"
+                "Gõ /status để xem các cờ đang bật.\n\n"
+                + formatters.DISCLAIMER,
+                reply_markup=home_kb,
+                edit=edit,
             )
             return
-        ticker = context.args[0].strip().upper()
+        conn = _conn()
+        try:
+            wl = repository.get_watchlist_rows(conn)
+            as_of = wl[0]["as_of_date"] if wl else None
+            rows = repository.get_sector_overview(conn, as_of)
+            if as_of is None and rows:
+                as_of = conn.execute(
+                    "SELECT MAX(filed_at) AS d FROM fundamental_scores"
+                ).fetchone()["d"]
+            n_mapped = conn.execute(
+                "SELECT COUNT(*) AS n FROM sector_mapping"
+            ).fetchone()["n"]
+            n_scores = conn.execute(
+                "SELECT COUNT(*) AS n FROM fundamental_scores"
+            ).fetchone()["n"]
+        finally:
+            conn.close()
+        if industry_filter:
+            needle = industry_filter.casefold()
+            rows = [
+                r
+                for r in rows
+                if needle in str(r.get("industry", "")).casefold()
+            ]
+        text = formatters.format_sector_overview(
+            rows,
+            as_of,
+            has_sector_mapping=bool(n_mapped),
+            has_watchlist=bool(wl) or bool(n_scores),
+        )
+        await _edit_or_reply(
+            reply_target, text, reply_markup=home_kb, edit=edit
+        )
+        if not send_chart or edit or not rows or not as_of:
+            return
+        message = getattr(reply_target, "message", None) or reply_target
+        if message is None:
+            return
+        from telegram import InputFile
+
+        from bot.charts import ChartDataError, render_sector_overview_chart
+
+        try:
+            path = render_sector_overview_chart(
+                str(as_of),
+                Path("store/charts") / f"sector_{as_of}.png",
+                db_path=_db_path(),
+            )
+            with path.open("rb") as handle:
+                await message.reply_photo(
+                    photo=InputFile(handle, filename=path.name),
+                    caption=f"Tổng quan ngành · {as_of} (PASS/WATCH/FAIL)",
+                )
+        except ChartDataError:
+            pass
+
+    async def _show_check_prompt(
+        *,
+        reply_target: Any,
+        context: ContextTypes.DEFAULT_TYPE,
+        edit: bool = False,
+    ) -> None:
+        context.user_data["awaiting_ticker"] = True
+        await _edit_or_reply(
+            reply_target,
+            formatters.format_check_prompt_text(),
+            reply_markup=formatters.build_home_only_keyboard(),
+            edit=edit,
+        )
+
+    async def _run_check_for_ticker(
+        *,
+        reply_target: Any,
+        ticker: str,
+    ) -> None:
+        """Luồng /check chung — text + keyboard; chart PNG chỉ qua callback."""
+        from bot.ta_reference import ta_indicators_from_closes
+
+        ticker = ticker.strip().upper()
         signal, fund = read_signal_and_fundamental(ticker)
         position = read_open_position(ticker)
         in_univ, is_fin, exclude_fin = _universe_and_finance_flags(ticker)
@@ -417,14 +686,12 @@ def build_application(token: str):
                 "industry": sector.get("industry"),
             }
         elif is_fin:
-            # Curated fallback — vẫn nói «tài chính» khi thiếu sector_mapping.
             meta["industry"] = "ngành tài chính (ước tính)"
         if closes and closes[-1].get("close") is not None:
             try:
                 meta["last_close"] = float(closes[-1]["close"])
             except (TypeError, ValueError):
                 pass
-            # Timestamp /check — ưu tiên ngày tín hiệu, fallback ngày giá store.
             if closes[-1].get("date"):
                 meta["price_date"] = str(closes[-1]["date"])[:10]
         if signal and signal.get("date"):
@@ -452,152 +719,59 @@ def build_application(token: str):
             meta=meta,
             w_max=_load_w_max(),
         )
-        # UX Redesign: tin đầu chỉ tóm tắt — số thô sau chk:detail.
         summary = formatters.check_summary_text(text)
+        has_bars = len(closes) >= 2
         check_kb = formatters.build_check_keyboard(
-            state, ticker, has_price_bars=len(closes) >= 2
+            state,
+            ticker,
+            has_price_bars=has_bars,
+            has_risk_chart=has_bars,
+            has_prob_chart=_signal_has_prob_chart(signal),
         )
-        await update.message.reply_text(summary, reply_markup=check_kb)
+        message = getattr(reply_target, "message", None) or reply_target
+        if message is None:
+            return
+        await message.reply_text(summary, reply_markup=check_kb)
+
+    async def watchlist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await _show_fund_basket(reply_target=update, edit=False)
+
+    async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        await _show_regime(reply_target=update, edit=False)
+
+    async def check_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+        if not context.args:
+            await update.message.reply_text(
+                "Cú pháp: /check <mã>\n"
+                "Ví dụ: /check FPT\n\n"
+                "Luồng: dữ liệu → Fundamental → Quant/Risk (nếu đủ) → "
+                "ưu tiên vị thế nếu đang nắm giấy.",
+                reply_markup=formatters.build_home_only_keyboard(),
+            )
+            return
+        await _run_check_for_ticker(
+            reply_target=update, ticker=context.args[0].strip().upper()
+        )
 
     async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        conn = _conn()
-        try:
-            rows = repository.get_open_positions(conn)
-            signals = repository.get_latest_signals(conn)
-            as_of = str(signals[0]["date"])[:10] if signals else None
-            last_closes: dict[str, float] = {}
-            for row in rows:
-                t = str(row.get("ticker") or "").strip().upper()
-                if not t:
-                    continue
-                closes = repository.get_price_closes(conn, t, limit_days=5)
-                if closes and closes[-1].get("close") is not None:
-                    try:
-                        last_closes[t] = float(closes[-1]["close"])
-                    except (TypeError, ValueError):
-                        pass
-                    if as_of is None and closes[-1].get("date"):
-                        as_of = str(closes[-1]["date"])[:10]
-        finally:
-            conn.close()
-        await update.message.reply_text(
-            formatters.format_positions(
-                rows,
-                w_max=_load_w_max(),
-                last_closes=last_closes,
-                as_of=as_of,
-            ),
-            reply_markup=formatters.build_positions_keyboard(has_rows=bool(rows)),
-        )
+        await _show_positions(reply_target=update, edit=False)
 
     async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         scope = context.args[0].strip() if context.args else "portfolio"
-        conn = _conn()
-        try:
-            rows = repository.get_backtest_results(conn, scope)
-            scopes = repository.list_backtest_scopes(conn)
-            run_id_preview = str(rows[0]["run_id"]) if rows else None
-            checks = (
-                repository.get_backtest_checks(
-                    conn, scope, "framework", run_id_preview
-                )
-                if run_id_preview
-                else []
-            )
-            yearly = (
-                repository.get_yearly_breakdown(
-                    conn, scope, "framework", run_id_preview
-                )
-                if run_id_preview
-                else []
-            )
-        finally:
-            conn.close()
-        # Lưu scope để callback bt:<view>:<run_id> đọc lại (không nhồi scope vào callback).
-        context.user_data["bt_scope"] = scope
-        bt_kb = None
-        if rows:
-            run_id = str(rows[0].get("run_id") or "latest")
-            context.user_data["bt_run_id"] = run_id
-            bt_kb = formatters.build_backtest_keyboard(run_id)
-        await reply_text_safe(
-            update,
-            formatters.format_backtest_results(
-                rows,
-                scope,
-                available_scopes=scopes,
-                checks=checks,
-                yearly=yearly,
-            ),
-            reply_markup=bt_kb,
+        await _show_backtest(
+            reply_target=update, context=context, scope=scope, edit=False
         )
-        # Phần C: không gửi hết ảnh 1 lần — chuyển view qua nút bt:<view>:<run_id>.
-        # D-6: ChartDataError trên view backtest đã trả lý do ngắn trong on_callback.
 
     async def sector_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        flags = _load_config_flags()
-        if not flags.get("sector_overview_command", False):
-            await update.message.reply_text(
-                "Lệnh /sector đang tắt trong cấu hình.\n"
-                "Gõ /status để xem các cờ đang bật.\n\n"
-                + formatters.DISCLAIMER
-            )
-            return
         industry_filter = (
             " ".join(context.args).strip() if context.args else ""
         )
-        conn = _conn()
-        try:
-            # as_of quý từ watchlist (PIT); đếm PASS/WATCH/FAIL từ fundamental_scores.
-            wl = repository.get_watchlist_rows(conn)
-            as_of = wl[0]["as_of_date"] if wl else None
-            rows = repository.get_sector_overview(conn, as_of)
-            if as_of is None and rows:
-                # Fallback khi chưa có watchlist nhưng đã có điểm cơ bản.
-                as_of = conn.execute(
-                    "SELECT MAX(filed_at) AS d FROM fundamental_scores"
-                ).fetchone()["d"]
-            n_mapped = conn.execute(
-                "SELECT COUNT(*) AS n FROM sector_mapping"
-            ).fetchone()["n"]
-            n_scores = conn.execute(
-                "SELECT COUNT(*) AS n FROM fundamental_scores"
-            ).fetchone()["n"]
-        finally:
-            conn.close()
-        if industry_filter:
-            needle = industry_filter.casefold()
-            rows = [
-                r
-                for r in rows
-                if needle in str(r.get("industry", "")).casefold()
-            ]
-        await update.message.reply_text(
-            formatters.format_sector_overview(
-                rows,
-                as_of,
-                has_sector_mapping=bool(n_mapped),
-                has_watchlist=bool(wl) or bool(n_scores),
-            )
+        await _show_sector(
+            reply_target=update,
+            industry_filter=industry_filter,
+            edit=False,
+            send_chart=True,
         )
-        if rows and as_of:
-            from telegram import InputFile
-
-            from bot.charts import ChartDataError, render_sector_overview_chart
-
-            try:
-                path = render_sector_overview_chart(
-                    str(as_of),
-                    Path("store/charts") / f"sector_{as_of}.png",
-                    db_path=_db_path(),
-                )
-                with path.open("rb") as handle:
-                    await update.message.reply_photo(
-                        photo=InputFile(handle, filename=path.name),
-                        caption=f"Tổng quan ngành · {as_of} (PASS/WATCH/FAIL)",
-                    )
-            except ChartDataError:
-                pass
 
     async def status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         # Round2: /status mirror /tinhtrangdulieu (+ cờ config).
@@ -864,7 +1038,10 @@ def build_application(token: str):
             ChartDataError,
             render_backtest_equity_curve_chart,
             render_fundamental_radar_chart,
+            render_garch_risk_band_chart,
+            render_monte_carlo_distribution_chart,
             render_price_chart,
+            render_realized_vol_band_chart,
             render_ta_reference_chart,
             render_yearly_stats_chart,
         )
@@ -953,20 +1130,100 @@ def build_application(token: str):
             )
             return
 
-        # --- /regime → /signals (opener tóm tắt) ---
-        if data == "nav:signals":
-            await _send_signals_summary(reply_target=message, edit=False)
-            return
+        # --- Navigation button-first (menu chính + màn con) ---
+        if data.startswith("nav:"):
+            if data != "nav:check_prompt":
+                _clear_awaiting_ticker(context)
+            chat = getattr(update, "effective_chat", None)
+            chat_id = int(getattr(chat, "id", 0) or 0)
 
-        if data == "nav:regime":
-            p_bull, as_of, prev_p = read_regime()
+            if data == "nav:home":
+                await _edit_or_reply(
+                    query,
+                    formatters.format_home_text(),
+                    reply_markup=formatters.build_main_menu_keyboard(),
+                    edit=True,
+                )
+                return
+            if data == "nav:signals":
+                await _send_signals_summary(reply_target=query, edit=True)
+                return
+            if data == "nav:regime":
+                await _show_regime(reply_target=query, edit=True)
+                return
+            if data == "nav:sector":
+                await _show_sector(
+                    reply_target=query, edit=True, send_chart=False
+                )
+                return
+            if data == "nav:watchlist":
+                await _show_fund_basket(reply_target=query, edit=True)
+                return
+            if data == "nav:positions":
+                await _show_positions(reply_target=query, edit=True)
+                return
+            if data == "nav:backtest":
+                await _show_backtest(
+                    reply_target=query, context=context, edit=True
+                )
+                return
+            if data == "nav:notifications":
+                await _show_notifications(
+                    reply_target=query, chat_id=int(chat_id), edit=True
+                )
+                return
+            if data == "nav:help":
+                await _edit_or_reply(
+                    query,
+                    formatters.format_help(),
+                    reply_markup=formatters.build_home_only_keyboard(),
+                    edit=True,
+                )
+                return
+            if data == "nav:check_prompt":
+                await _show_check_prompt(
+                    reply_target=query, context=context, edit=True
+                )
+                return
             await message.reply_text(
-                formatters.format_regime_message(
-                    p_bull, as_of, prev_p_bull=prev_p
-                ),
-                reply_markup=formatters.build_regime_keyboard(),
+                f"Không nhận nav «{data}».\n\n" + formatters.DISCLAIMER
             )
             return
+
+        # --- Thông báo toggle ---
+        if data in ("sub:on", "sub:off"):
+            chat = getattr(update, "effective_chat", None)
+            chat_id = int(getattr(chat, "id", 0) or 0)
+            conn = _conn()
+            try:
+                repository.set_subscription(conn, int(chat_id), data == "sub:on")
+            finally:
+                conn.close()
+            await _show_notifications(
+                reply_target=query, chat_id=int(chat_id), edit=True
+            )
+            return
+
+        # --- Rổ Fundamental 4 nhóm ---
+        if data == "fund:summary":
+            await _show_fund_basket(reply_target=query, edit=True)
+            return
+        if data.startswith("fund:"):
+            parts = data.split(":")
+            if len(parts) >= 3:
+                grp = parts[1].upper()
+                try:
+                    page_i = int(parts[2])
+                except ValueError:
+                    page_i = 0
+                if grp in formatters.FUND_BASKET_GROUPS:
+                    await _show_fund_basket_group(
+                        reply_target=query,
+                        group=grp,
+                        page=page_i,
+                        edit=True,
+                    )
+                    return
 
         # --- /backtest view switcher ---
         if data.startswith("bt:"):
@@ -1177,6 +1434,83 @@ def build_application(token: str):
                     block = formatters.format_ta_reference_block(ta)
                     if block:
                         await message.reply_text(block)
+                elif action == "risk":
+                    # Chỉ đọc store — giống /chart risk (GARCH nếu đủ σ̂, không thì rolling).
+                    if len(closes) < 2:
+                        raise ChartDataError(f"Chưa đủ giá để vẽ dải rủi ro {ticker}.")
+                    conn2 = _conn()
+                    try:
+                        closes_full = repository.get_price_closes(
+                            conn2, ticker, limit_days=500
+                        )
+                        sig_hist = repository.get_signal_history(conn2, ticker)
+                    finally:
+                        conn2.close()
+                    sigma_hist = [
+                        {"date": r["date"], "sigma_hat": r["sigma_hat"]}
+                        for r in sig_hist
+                        if r.get("sigma_hat") is not None
+                    ]
+                    if len(sigma_hist) >= 5:
+                        path = render_garch_risk_band_chart(
+                            ticker,
+                            list(closes_full),
+                            sigma_hist,
+                            chart_dir / f"{ticker}_risk.png",
+                        )
+                        cap = f"{ticker} — dải ±2σ̂ GARCH (lịch sử signals)"
+                    else:
+                        signal, _ = read_signal_and_fundamental(ticker)
+                        sigma = None
+                        if signal and signal.get("sigma_hat") is not None:
+                            try:
+                                sigma = float(signal["sigma_hat"])
+                            except (TypeError, ValueError):
+                                sigma = None
+                        path = render_realized_vol_band_chart(
+                            ticker,
+                            list(closes_full),
+                            chart_dir / f"{ticker}_risk.png",
+                            latest_sigma_hat=sigma,
+                        )
+                        cap = (
+                            f"{ticker} — biến động rolling "
+                            f"(cần ≥5 phiên σ̂ để vẽ GARCH đầy đủ)"
+                        )
+                    await _callback_send_png(
+                        message, path, f"{cap}\n{formatters.DISCLAIMER}"
+                    )
+                elif action == "prob":
+                    signal, _ = read_signal_and_fundamental(ticker)
+                    import json as _json
+
+                    reason: dict = {}
+                    if signal and signal.get("reason_json"):
+                        try:
+                            reason = _json.loads(str(signal["reason_json"]))
+                        except _json.JSONDecodeError:
+                            reason = {}
+                    outcomes = reason.get("mc_outcomes") or reason.get(
+                        "monte_carlo_outcomes"
+                    )
+                    if not isinstance(outcomes, list) or not outcomes:
+                        raise ChartDataError(
+                            f"Biểu đồ MC chưa có dữ liệu trong store cho {ticker}."
+                        )
+                    tp = float(reason.get("tp_pct") or 0.08)
+                    sl = float(reason.get("sl_pct") or 0.05)
+                    path = render_monte_carlo_distribution_chart(
+                        ticker,
+                        [float(x) for x in outcomes],
+                        tp,
+                        sl,
+                        chart_dir / f"{ticker}_prob.png",
+                    )
+                    await _callback_send_png(
+                        message,
+                        path,
+                        f"{ticker} — phân phối Monte Carlo\n{formatters.DISCLAIMER}",
+                    )
                 else:
                     await message.reply_text(f"Không nhận action «{action}».")
             except (ChartDataError, TypeError, ValueError) as exc:
@@ -1206,10 +1540,19 @@ def build_application(token: str):
     async def bare_ticker_msg(
         update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """ban_phac P2: nhập ticker thuần (vd FPT) → cùng luồng /check — không Quant on-demand."""
+        """Nhập ticker thuần (vd FPT) → cùng luồng /check; hỗ trợ awaiting_ticker."""
         text = (update.message.text or "").strip().upper()
+        awaiting = bool(context.user_data.get("awaiting_ticker"))
         if not re.fullmatch(r"[A-Z]{3}", text):
+            if awaiting:
+                await update.message.reply_text(
+                    formatters.format_awaiting_ticker_invalid(
+                        update.message.text or ""
+                    ),
+                    reply_markup=formatters.build_home_only_keyboard(),
+                )
             return
+        _clear_awaiting_ticker(context)
         context.args = [text]
         await check_cmd(update, context)
 
