@@ -141,7 +141,20 @@ def test_sector_overrides_applied(tmp_path):
 def test_formatters_regime_and_check():
     assert "tăng" in formatters.translate_regime(0.8)
     assert "giảm" in formatters.translate_regime(0.2)
+    # D-3: nhãn prefix theo ngưỡng hiển thị
+    assert formatters.regime_label_prefix(0.8) == "nghiêng tăng"
+    assert formatters.regime_label_prefix(0.5) == "đi ngang"
+    assert formatters.regime_label_prefix(0.2) == "nghiêng giảm"
     assert "rõ ràng" in formatters.translate_kalman_trend(2.5)
+    # D-4: ba nhánh size
+    assert "Không mở" in formatters._fmt_size_pct(0)
+    assert "Không mở" in formatters._fmt_size_pct(None)
+    assert "rất nhỏ" in formatters._fmt_size_pct(0.003)
+    assert "6.0%" in formatters._fmt_size_pct(0.06)
+    # D-6 helper
+    assert "Biểu đồ giá" in formatters.format_chart_skip_note(
+        "giá", ValueError("chưa đủ dữ liệu")
+    )
     assert "Đạt" in formatters.translate_fundamental_view("PASS")
     msg = formatters.format_signal_message(
         {
@@ -177,22 +190,56 @@ def test_formatters_regime_and_check():
     assert "Tín hiệu hệ thống: MUA" in msg
     assert "KHUYẾN NGHỊ" not in msg
     assert "① Doanh nghiệp" in msg
+    assert "Kết luận:" in msg
+    assert "→ Vì sao" in msg
+    assert "── Chi tiết ──" in msg
     assert "Xếp hạng trong nhóm ngành" in msg
     # Không có value 6.1 trong fixture → fallback điểm nội bộ
     assert "Điểm nội bộ" in msg or "tăng trưởng" in msg
     assert "② Thị trường chung" in msg
     assert "③ Xu hướng mã này" in msg
+    # D-5: Kalman dùng t-stat; score trên dòng riêng
+    assert "t-stat" in msg.casefold()
+    assert "Điểm tổng hợp" in msg
+    assert "(điểm 1.2)" not in msg  # không ghép score vào câu Kalman
     assert "④ Rủi ro" in msg
     assert "Giá gần nhất" in msg
     assert "/chart VNM price" in msg
     assert "/chart VNM risk" in msg
-    assert "Mô phỏng xác suất" in msg
+    # D-9: ngôn ngữ sản phẩm khi MC off (không «chưa bật»)
+    assert "mô phỏng xác suất" in msg.casefold()
+    assert "chưa bật" not in msg.casefold()
     assert "eps_cagr_3y" not in msg
     assert "kalman_slope" not in msg
     assert "equal_weight" not in msg
     assert "gjr_garch" not in msg
     assert "PASS_THRESHOLDS" not in msg
     assert formatters.DISCLAIMER in msg
+
+    # D-5 + D-4: score thấp ≠ t-stat; size = 0
+    split_msg = formatters.format_signal_message(
+        {
+            "ticker": "AAA",
+            "date": "2024-06-28",
+            "action": "WATCH",
+            "score": 0.34,
+            "p_regime": 0.02,
+            "sigma_hat": 0.02,
+            "stop": 10.0,
+            "size": 0.0,
+            "reason_json": '{"slope_tstat": 0.3}',
+        },
+        {"fundamental_view": "PASS"},
+    )
+    assert "không có xu hướng rõ" in split_msg.casefold()
+    assert "t-stat" in split_msg.casefold()
+    assert "Điểm tổng hợp" in split_msg and "0.34" in split_msg
+    assert "(điểm 0.34)" not in split_msg
+    assert "Không mở vị thế" in split_msg
+    # D-3: p≈0 không còn «nghiêng tăng ~0%»
+    assert "nghiêng giảm" in split_msg.casefold()
+    assert "nghiêng tăng (~0%" not in split_msg.casefold()
+    assert "nghiêng tăng ~0%" not in split_msg
 
     gap_msg = formatters.format_signal_message(
         {
@@ -212,13 +259,17 @@ def test_formatters_regime_and_check():
 
     welcome = formatters.format_welcome()
     assert "/signals" in welcome and "/positions" in welcome
-    assert "Xem thị trường" in welcome or "cơ hội" in welcome
+    assert "Thị trường" in welcome or "cơ hội" in welcome
     assert "/check FPT" in welcome
+    assert "/subscribe" not in welcome  # E-3: đẩy xuống /help
     help_txt = formatters.format_help()
     assert "/check <mã>" in help_txt and "Tham khảo thêm" in help_txt
-    assert "/chart <mã> ta" in help_txt
-    assert "GARCH" in help_txt or "biến động" in help_txt
-    assert "chia đều" not in help_txt or "không phải chia đều" in help_txt
+    assert "Khám phá thị trường" in help_txt
+    assert "Tra cứu 1 mã" in help_txt
+    assert "Quản lý vị thế" in help_txt
+    assert "trần %/mã" in help_txt or "trần" in help_txt
+    assert "w_max" not in help_txt
+    assert "chia đều" not in help_txt or "không chia đều" in help_txt
 
     sig_list = formatters.format_signals_list(
         [
@@ -251,16 +302,24 @@ def test_formatters_regime_and_check():
             },
         ]
     )
-    assert "Khí hậu thị trường" in sig_list
+    assert "Kết luận:" in sig_list
     assert "điểm" in sig_list
+    # D-3 / E-1: một dòng khí hậu, nhãn động (0.59 → nghiêng tăng)
+    assert "nghiêng tăng (~59%)" in sig_list or "nghiêng tăng (~59" in sig_list
+    climate_line = [
+        ln for ln in sig_list.splitlines() if "khí hậu" in ln.casefold()
+    ][0]
+    assert "—" in climate_line
     assert "σ̂" not in sig_list
     assert "VNM" in sig_list and "FPT" in sig_list
+    assert "🟢 VNM" in sig_list or "🟢 AAA" in sig_list  # E-3 badge trước mã
     assert "→ Chi tiết: /check VNM" in sig_list
     assert "Tín hiệu đáng chú ý" in sig_list
     assert "Tránh mua mới" in sig_list
-    assert "strategy pipeline" in sig_list.casefold() or "pipeline" in sig_list.casefold()
-    assert "GARCH" in sig_list or "sizing" in sig_list.casefold()
-    assert "10.0%" in sig_list or "trần" in sig_list  # w_max tip / size
+    assert "pipeline" in sig_list.casefold()
+    assert "biến động" in sig_list.casefold() or "trần" in sig_list
+    assert "w_max" not in sig_list
+    assert "10.0%" in sig_list or "trần" in sig_list  # trần %/mã / size
     # Độ mạnh: VNM (1.2) trước AAA (0.3) trong nhóm BUY
     assert sig_list.index("VNM") < sig_list.index("AAA")
     # Size thật (không làm tròn mất) + chạm trần
@@ -279,7 +338,36 @@ def test_formatters_regime_and_check():
         w_max=0.10,
     )
     assert "chạm trần" in capped
+    # D-4 trên /signals: size rất nhỏ
+    tiny = formatters.format_signals_list(
+        [
+            {
+                "date": "2024-06-28",
+                "ticker": "TINY",
+                "action": "BUY",
+                "score": 0.5,
+                "p_regime": 0.4,
+                "sigma_hat": 0.02,
+                "size": 0.002,
+            }
+        ]
+    )
+    assert "rất nhỏ" in tiny
+    assert "nghiêng giảm" in tiny or "đi ngang" in tiny
     assert formatters.format_signals_list([])
+    regime_bear = formatters.format_regime_message(0.1, "2024-06-28")
+    assert "nghiêng giảm" in regime_bear
+    assert "Kết luận:" in regime_bear
+    assert "nghiêng tăng ~" not in regime_bear
+    regime_cmp = formatters.format_regime_message(
+        0.6, "2024-06-28", prev_p_bull=0.4
+    )
+    assert "So với phiên trước" in regime_cmp
+    assert "đã chuyển" in regime_cmp
+    regime_same = formatters.format_regime_message(
+        0.6, "2024-06-28", prev_p_bull=0.58
+    )
+    assert "không đổi" in regime_same
     wl = formatters.format_watchlist(
         [
             {"as_of_date": "2024-01-01", "ticker": "AAA", "fundamental_view": "PASS"},
@@ -307,13 +395,18 @@ def test_formatters_regime_and_check():
                 "size_pct_nav": 0.1,
                 "opened_at": "2026-09-21",
             }
-        ]
+        ],
+        last_closes={"GAS": 96.25},
     )
     assert "Vị thế giấy" in pos
     assert "21/09/2026" in pos
     assert "10.0%" in pos or "Tỷ trọng" in pos
     assert "∑" in pos or "trần" in pos
     assert "chạm trần" in pos
+    assert "tổng p/l" in pos.casefold()
+    assert "w_max" not in pos
+    # entry 87.5 → 96.25 = +10%
+    assert "10.0%" in pos or "+10" in pos or "10%" in pos
     empty_bt = formatters.format_backtest_results([], "portfolio")
     assert "Chưa có báo cáo kiểm thử" in empty_bt or "Chưa có" in empty_bt
     assert "/signals" in empty_bt and "/watchlist" in empty_bt
@@ -343,6 +436,11 @@ def test_formatters_regime_and_check():
                 "n_trades": 36,
                 "sortino": -0.7,
                 "calmar": -0.4,
+                "win_rate": 0.495,
+                "total_return": 0.0215,
+                "profit_factor": 1.19,
+                "avg_exposure": 0.321,
+                "pct_sessions_cash_gt_80": 0.12,
             },
         ],
         "portfolio",
@@ -357,11 +455,19 @@ def test_formatters_regime_and_check():
         ],
     )
     assert "Báo cáo kiểm thử" in filled_bt
-    assert "không phải lãi/lỗ tài khoản thật" in filled_bt.casefold() or "không cam kết" in filled_bt.casefold()
+    assert "Kết luận:" in filled_bt
+    assert "không cam kết" in filled_bt.casefold() or "không phải lãi" in filled_bt.casefold()
     assert "Sortino" in filled_bt
     assert "phát hiện hợp lệ" in filled_bt.casefold()
-    assert "MIN_SHARPE" in filled_bt or "❌" in filled_bt
+    assert "Cải thiện Sharpe" in filled_bt or "❌" in filled_bt
+    assert "MIN_SHARPE" not in filled_bt  # D-9: dịch tên check
     assert "B1" in filled_bt or "CANSLIM" in filled_bt
+    # D-7: thống kê bổ sung (ngôn ngữ sản phẩm)
+    assert "Thống kê bổ sung" in filled_bt
+    assert "tỷ lệ thắng" in filled_bt.casefold() or "win rate" in filled_bt.casefold()
+    assert "hệ số lãi/lỗ" in filled_bt.casefold() or "profit factor" in filled_bt.casefold()
+    assert "tổng lãi" in filled_bt.casefold()
+    assert "Exposure" in filled_bt or "phơi nhiễm" in filled_bt.casefold()
     thin_bt = formatters.format_backtest_results(
         [
             {
@@ -376,7 +482,7 @@ def test_formatters_regime_and_check():
         ],
         "portfolio",
     )
-    assert "mỏng" in thin_bt.casefold() or "sơ bộ" in thin_bt.casefold()
+    assert "ít" in thin_bt.casefold() or "mỏng" in thin_bt.casefold() or "sơ bộ" in thin_bt.casefold()
     miss = formatters.format_check_unavailable(
         "VCB", in_watchlist=False, has_fundamental=False, in_universe_csv=False
     )

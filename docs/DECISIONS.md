@@ -477,3 +477,23 @@ Ablation OOS (cùng bundle; layer Sharpe): B0 1.83 → fundamental 1.61 → regi
 | Ngưỡng alpha/regime | Không đụng | — |
 
 **Quyết định:** giữ Kalman incremental trong bản chính; **không** bật GARCH refit-N cho đến khi nhóm chọn N (vd. 5/21) và append DECISIONS riêng. Không cook ngưỡng.
+
+### D-8 — MAX_TURNOVER / framework row (2026-09-24)
+
+**Quan sát UX:** check `MAX_TURNOVER: thiếu turnover — không kết luận` xuất hiện khi hàng `baseline=framework` **không** có trong `backtest_results` của đúng `run_id` (không phải bug hàm `turnover()` — P2-2 cờ vẫn bật; flatten → upsert → `build_backtest_checks` đã wire).
+
+**Verify:** trên run p22 (`store/backtest_final_vn100_20260923_p22_watchlist.json`) đã có framework + turnover/exposure — không đổi code turnover. Nếu check còn fail trên ảnh chụp cũ: re-persist ablation → store sau P0-1/P0-2, không vá logic turnover.
+
+**Quyết định:** chỉ ghi nhận; **không** sửa code turnover / MAX_TURNOVER threshold.
+
+### D-2 Hướng A — display_lookup OHLCV tách Quant (2026-09-24)
+
+**Vấn đề:** `/check` mã ngoài watchlist (vd VCB tài chính) không có `price_bars` vì daily chỉ ingest Quant universe.
+
+**Patch:** `universe.display_lookup_enabled` + `display_lookup_file` (path CSV) + `display_lookup_lookback_days: 250`. Sau persist bars Quant, `extra = display \\ watchlist` → `prepare_price_inputs` → `upsert_price_bars` only. **Không** truyền `extra` vào `generate_signals`. Formatter excluded/out_of_scope: 1 câu disclaimer giá tham khảo / ngoài chiến lược ≠ thiếu dữ liệu. `quant_from_watchlist: true` giữ nguyên.
+
+### Phần E — narrative UX (2026-09-24)
+
+**Phạm vi:** chỉ copy/layout formatter + nút `▾ Xem chi tiết` (`chk:detail:`) reuse Phần C. **Không** đổi `resolve_check_state`, ngưỡng, hay nhãn «Tín hiệu hệ thống».
+
+**Đã làm:** E-1 kết luận → vì sao → chi tiết trên `/check` (7 state); E-3 `/signals` badge + opener, `/regime` so sánh phiên trước nếu có lịch sử, `/backtest` câu mở đầu thường, `/start` rút gọn, `/help` nhóm nhu cầu, `/positions` tổng P/L; D-9 jargon (`w_max` → trần %/mã, MC off ngôn ngữ sản phẩm, dịch tên check, CVaR gloss, thang điểm 0–100).

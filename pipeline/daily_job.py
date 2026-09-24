@@ -9,6 +9,10 @@ Luồng: store.watchlist (từ Tầng 1) + giá/khối lượng hằng ngày t�
 Universe Quant: chỉ watchlist (config ``universe.quant_from_watchlist: true``);
 không kéo full VN100. Benchmark thêm ``quant_engine.benchmark`` (vd VNINDEX).
 
+D-2 Hướng A: nếu ``universe.display_lookup_enabled``, sau khi ghi bars Quant
+có thể ingest thêm OHLCV cho ``display_lookup_file \\ watchlist`` (chỉ
+``price_bars``, không truyền vào ``generate_signals``).
+
 QUAN TRỌNG: đây là nơi DUY NHẤT được fit/chạy các mô hình Tầng 2. bot/ không
 bao giờ được gọi các hàm trong quant_engine/ trực tiếp.
 """
@@ -297,6 +301,57 @@ def diff_signal_actions(
     return out
 
 
+def _ingest_display_lookup_bars(
+    config: dict,
+    *,
+    db_path: str,
+    quant_universe: list[str],
+    signal_date: str,
+    fetch_prices: bool,
+) -> int:
+    """D-2 Hướng A: ghi OHLCV cho display_lookup_file \\ watchlist.
+
+    Chỉ ``upsert_price_bars`` — không gọi ``generate_signals``. Bỏ qua nếu tắt
+    cờ, không fetch, hoặc thiếu file.
+    """
+    ucfg = config.get("universe") or {}
+    if not bool(ucfg.get("display_lookup_enabled")):
+        return 0
+    if not fetch_prices:
+        return 0
+    display_file = str(ucfg.get("display_lookup_file") or "").strip()
+    if not display_file:
+        return 0
+
+    from data.universe import load_universe_tickers
+
+    try:
+        display_universe = load_universe_tickers(display_file)
+    except FileNotFoundError as exc:
+        print(f"daily_job: display_lookup skip — {exc}", flush=True)
+        return 0
+
+    extra = sorted(set(display_universe) - {str(t).upper() for t in quant_universe})
+    if not extra:
+        return 0
+
+    lookback = int(ucfg.get("display_lookup_lookback_days") or 250)
+    # Chỉ fetch extra — không lẫn benchmark/Quant universe vào lần gọi này
+    extra_inputs = prepare_price_inputs(
+        extra, config, lookback_days=lookback, end=signal_date
+    )
+    extra_bars = bars_from_price_inputs(extra_inputs)
+    if not extra_bars:
+        return 0
+
+    conn = repository.get_connection(db_path)
+    try:
+        repository.init_schema(conn)
+        return repository.upsert_price_bars(conn, extra_bars)
+    finally:
+        conn.close()
+
+
 def run(
     config: dict,
     *,
@@ -356,6 +411,7 @@ def run(
     push_result: dict[str, Any] = {"chat_ids": [], "sent": 0}
     paper_result: dict[str, Any] = {"opened": 0, "closed": 0, "skipped": 0}
     price_bars_n = 0
+    display_bars_n = 0
     if persist:
         # Ghi price_bars dù không có signal (phục vụ /chart price)
         bar_rows = bars_from_price_inputs(price_inputs)
@@ -402,6 +458,15 @@ def run(
                 signals, chat_ids, action_changes=action_changes or None
             )
 
+        # D-2 Hướng A: OHLCV display (display_file \ watchlist) — chỉ price_bars
+        display_bars_n = _ingest_display_lookup_bars(
+            config,
+            db_path=db_path,
+            quant_universe=universe,
+            signal_date=signal_date,
+            fetch_prices=fetch_prices,
+        )
+
     return {
         "tickers": universe,
         "price_inputs": price_inputs,
@@ -409,6 +474,7 @@ def run(
         "push": push_result,
         "paper_positions": paper_result,
         "price_bars_upserted": price_bars_n,
+        "display_price_bars_upserted": display_bars_n,
         "benchmark": benchmark,
         "benchmark_loaded": bool(
             benchmark and series and benchmark in series

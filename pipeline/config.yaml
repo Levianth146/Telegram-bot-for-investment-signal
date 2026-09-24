@@ -13,6 +13,10 @@ universe:
   smoke_file: "data/universe/hose_liquid_35.csv"
   # Tầng 2 Quant (daily): chỉ watchlist PASS/WATCH (+ benchmark VNINDEX)
   quant_from_watchlist: true
+  # D-2 Hướng A: OHLCV cho /check tra cứu (VN100 \ watchlist) — KHÔNG đưa vào Quant
+  display_lookup_enabled: true
+  display_lookup_file: "data/universe/vn100.csv"  # Path thật — load_universe_tickers nhận Path
+  display_lookup_lookback_days: 250  # đủ TA tham khảo; ngắn hơn lookback Quant
   # V1: chỉ HOSE + HNX — không phân tích UPCOM (và sàn ngoài list)
   allowed_exchanges: [HOSE, HNX]
 

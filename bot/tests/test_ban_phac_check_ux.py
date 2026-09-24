@@ -11,11 +11,13 @@ from bot import formatters
 def test_s1_out_of_scope_no_wait_message():
     """§11.1 — ngoài phạm vi; không bảo chỉ cần đợi."""
     msg = formatters.format_check_by_state(
-        formatters.CHECK_OUT_OF_SCOPE, "ZZZ", meta={}
+        formatters.CHECK_OUT_OF_SCOPE, "ZZZ", meta={"last_close": 10.0}
     )
     assert "phạm vi" in msg.casefold() or "ngoài" in msg.casefold()
     assert "15:00" not in msg
     assert "đợi" not in msg.casefold() or "không" in msg.casefold()
+    assert "dữ liệu tham khảo giá" in msg.casefold()
+    assert "không phải vì thiếu dữ liệu" in msg.casefold()
 
 
 def test_s2_insufficient_no_signal():
@@ -116,8 +118,13 @@ def test_s5_pass_with_cached_signal():
         state, "FPT", fund=fund, signal=signal, meta={"last_close": 110.0}
     )
     assert "Tín hiệu hệ thống: MUA" in msg
+    assert "Kết luận" in msg or "FPT —" in msg
+    assert "→ Vì sao" in msg
+    assert "── Chi tiết ──" in msg
     assert "① Doanh nghiệp" in msg
     assert "④ Rủi ro" in msg
+    assert "chưa bật" not in msg.casefold()
+    assert "Khuyến nghị mua" not in msg  # E-4: không đổi nhãn
 
 
 def test_s6_pass_without_quant_no_ondemand():
@@ -141,8 +148,10 @@ def test_s6_pass_without_quant_no_ondemand():
     assert state == formatters.CHECK_PASS_NO_SIGNAL
     msg = formatters.format_check_by_state(state, "GAS", fund=fund)
     assert "PASS" in msg
+    assert "Kết luận:" in msg
     assert "daily_job" in msg or "on-demand" in msg.casefold()
     assert "Tín hiệu hệ thống: MUA" not in msg
+    assert "── Chi tiết ──" in msg
 
 
 def test_s7_signals_pipeline_only_and_strength_order():
@@ -229,6 +238,8 @@ def test_excluded_financial_state():
     assert "Tham khảo thêm" in msg
     assert "Chưa đủ dữ liệu" not in msg
     assert "Câu chuyện ngắn" in msg or "phạm vi" in msg.casefold()
+    assert "dữ liệu tham khảo giá" in msg.casefold()
+    assert "không phải vì thiếu dữ liệu" in msg.casefold()
 
 
 def test_excluded_financial_not_insufficient_even_with_fund_row():
@@ -414,13 +425,12 @@ def _actions_from_rows(rows: list[list[tuple[str, str]]]) -> set[str]:
 
 
 def test_check_keyboard_by_state_c2():
-    """C-4.1 — đúng bộ nút theo từng state (có giá)."""
+    """C-4.1 — đúng bộ nút theo từng state (có giá); E-1 thêm ▾ Xem chi tiết."""
     t = "MWG"
-    # OUT / EXCLUDED / INSUFFICIENT → chỉ TA khi có giá
+    # OUT / EXCLUDED → chỉ TA khi có giá (không detail — message đã ngắn)
     for st in (
         formatters.CHECK_OUT_OF_SCOPE,
         formatters.CHECK_EXCLUDED_FINANCIAL,
-        formatters.CHECK_INSUFFICIENT,
     ):
         acts = _actions_from_rows(
             formatters.check_keyboard_rows(st, t, has_price_bars=True)
@@ -430,12 +440,19 @@ def test_check_keyboard_by_state_c2():
             formatters.check_keyboard_rows(st, t, has_price_bars=False) == []
         )
 
+    insuf_acts = _actions_from_rows(
+        formatters.check_keyboard_rows(
+            formatters.CHECK_INSUFFICIENT, t, has_price_bars=True
+        )
+    )
+    assert insuf_acts == {"detail", "ta"}
+
     fail_acts = _actions_from_rows(
         formatters.check_keyboard_rows(
             formatters.CHECK_FAIL, t, has_price_bars=True
         )
     )
-    assert fail_acts == {"radar", "ta"}
+    assert fail_acts == {"detail", "radar", "ta"}
 
     for st in (
         formatters.CHECK_WATCH,
@@ -445,15 +462,15 @@ def test_check_keyboard_by_state_c2():
         acts = _actions_from_rows(
             formatters.check_keyboard_rows(st, t, has_price_bars=True)
         )
-        assert acts == {"price", "radar", "ta", "watch_add"}
+        assert acts == {"detail", "price", "radar", "ta", "watch_add"}
 
     pos_acts = _actions_from_rows(
         formatters.check_keyboard_rows(
             formatters.CHECK_POSITION, t, has_price_bars=True
         )
     )
-    assert pos_acts == {"pnl", "price", "radar", "ta", "watch_add"}
-    # pnl đứng trước các nút base
+    assert pos_acts == {"detail", "pnl", "price", "radar", "ta", "watch_add"}
+    # detail đứng trước các nút base
     flat = [
         a
         for row in formatters.check_keyboard_rows(
@@ -461,7 +478,8 @@ def test_check_keyboard_by_state_c2():
         )
         for a in row
     ]
-    assert flat[0][1].startswith("chk:pnl:")
+    assert flat[0][1].startswith("chk:detail:")
+    assert any(cb.startswith("chk:pnl:") for _lab, cb in flat)
 
 
 def test_check_keyboard_callback_len_and_build():

@@ -187,21 +187,40 @@ def _universe_and_finance_flags(ticker: str) -> tuple[bool | None, bool, bool]:
     return in_univ, is_fin, exclude_fin
 
 
-def read_regime() -> tuple[float | None, str | None]:
+def read_regime() -> tuple[float | None, str | None, float | None]:
+    """Trả về (p_bull hiện tại, as_of, p_bull phiên trước nếu store có lịch sử)."""
     signals = read_latest_signals()
     if not signals:
-        return None, None
+        return None, None, None
     # Market regime: median p_regime across names (shared index filter in daily_job)
     values = [
         float(s["p_regime"])
         for s in signals
         if s.get("p_regime") is not None
     ]
+    as_of = signals[0].get("date")
     if not values:
-        return None, signals[0].get("date")
+        return None, as_of, None
     values.sort()
     mid = values[len(values) // 2]
-    return mid, signals[0].get("date")
+    prev: float | None = None
+    conn = _conn()
+    try:
+        hist = repository.get_market_regime_history(conn, limit_days=10)
+    finally:
+        conn.close()
+    if len(hist) >= 2:
+        days = [str(h.get("date")) for h in hist]
+        try:
+            if as_of and str(as_of) in days:
+                idx = days.index(str(as_of))
+                if idx >= 1:
+                    prev = float(hist[idx - 1]["p_bull"])
+            else:
+                prev = float(hist[-2]["p_bull"])
+        except (TypeError, ValueError, KeyError):
+            prev = None
+    return mid, as_of, prev
 
 
 def _load_config_flags() -> dict[str, bool]:
@@ -323,9 +342,11 @@ def build_application(token: str):
         await reply_text_safe(update, formatters.format_watchlist(rows))
 
     async def regime_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-        p_bull, as_of = read_regime()
+        p_bull, as_of, prev_p = read_regime()
         await update.message.reply_text(
-            formatters.format_regime_message(p_bull, as_of),
+            formatters.format_regime_message(
+                p_bull, as_of, prev_p_bull=prev_p
+            ),
             reply_markup=formatters.build_regime_keyboard(),
         )
 
@@ -455,8 +476,11 @@ def build_application(token: str):
                     f"{ticker} — giá đóng cửa gần đây\n"
                     f"{formatters.DISCLAIMER}",
                 )
-            except ChartDataError:
-                pass
+            except ChartDataError as exc:
+                # D-6: không nuốt im — báo lý do ngắn cho user.
+                await update.message.reply_text(
+                    formatters.format_chart_skip_note("giá", exc)
+                )
 
         if fund and _four_pillars_finite(fund):
             try:
@@ -469,7 +493,11 @@ def build_application(token: str):
                     chart_dir / f"{ticker}_fundamental.png",
                 )
                 await _send_png(path, f"{ticker} — radar 4 trụ Fundamental")
-            except (ChartDataError, TypeError, ValueError):
+            except ChartDataError as exc:
+                await update.message.reply_text(
+                    formatters.format_chart_skip_note("fundamental", exc)
+                )
+            except (TypeError, ValueError):
                 pass
 
         if state in price_ta_states and len(closes) >= 20:
@@ -481,8 +509,10 @@ def build_application(token: str):
                     path,
                     f"{ticker} — TA tham khảo — không phải tín hiệu hệ thống",
                 )
-            except ChartDataError:
-                pass
+            except ChartDataError as exc:
+                await update.message.reply_text(
+                    formatters.format_chart_skip_note("TA", exc)
+                )
 
         if pass_like and len(closes) >= 5:
             try:
@@ -501,8 +531,10 @@ def build_application(token: str):
                         ticker, list(closes), out_risk
                     )
                 await _send_png(path, f"{ticker} — dải biến động")
-            except ChartDataError:
-                pass
+            except ChartDataError as exc:
+                await update.message.reply_text(
+                    formatters.format_chart_skip_note("rủi ro", exc)
+                )
 
         # prob chỉ khi store có MC outcomes (không bịa)
         if pass_like and signal:
@@ -528,17 +560,32 @@ def build_application(token: str):
                         chart_dir / f"{ticker}_prob.png",
                     )
                     await _send_png(path, f"{ticker} — Monte Carlo (store)")
-                except ChartDataError:
-                    pass
+                except ChartDataError as exc:
+                    await update.message.reply_text(
+                        formatters.format_chart_skip_note("Monte Carlo", exc)
+                    )
 
     async def positions_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         conn = _conn()
         try:
             rows = repository.get_open_positions(conn)
+            last_closes: dict[str, float] = {}
+            for row in rows:
+                t = str(row.get("ticker") or "").strip().upper()
+                if not t:
+                    continue
+                closes = repository.get_price_closes(conn, t, limit_days=5)
+                if closes and closes[-1].get("close") is not None:
+                    try:
+                        last_closes[t] = float(closes[-1]["close"])
+                    except (TypeError, ValueError):
+                        pass
         finally:
             conn.close()
         await update.message.reply_text(
-            formatters.format_positions(rows, w_max=_load_w_max())
+            formatters.format_positions(
+                rows, w_max=_load_w_max(), last_closes=last_closes
+            )
         )
 
     async def backtest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -583,6 +630,7 @@ def build_application(token: str):
             reply_markup=bt_kb,
         )
         # Phần C: không gửi hết ảnh 1 lần — chuyển view qua nút bt:<view>:<run_id>.
+        # D-6: ChartDataError trên view backtest đã trả lý do ngắn trong on_callback.
 
     async def sector_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         flags = _load_config_flags()
@@ -998,6 +1046,56 @@ def build_application(token: str):
                         ticker, on_system_watchlist=on_wl
                     )
                 )
+                return
+
+            if action == "detail":
+                # E-1: mở khối chi tiết — cùng state machine, không đổi resolve_check_state.
+                signal, fund = read_signal_and_fundamental(ticker)
+                position = read_open_position(ticker)
+                in_univ, is_fin, exclude_fin = _universe_and_finance_flags(ticker)
+                conn = _conn()
+                try:
+                    sector = repository.get_sector_for_ticker(conn, ticker)
+                    closes = repository.get_price_closes(conn, ticker, limit_days=120)
+                finally:
+                    conn.close()
+                meta: dict[str, Any] = {}
+                if sector:
+                    meta = {
+                        "market": sector.get("market"),
+                        "industry": sector.get("industry"),
+                    }
+                elif is_fin:
+                    meta["industry"] = "ngành tài chính (ước tính)"
+                if closes and closes[-1].get("close") is not None:
+                    try:
+                        meta["last_close"] = float(closes[-1]["close"])
+                    except (TypeError, ValueError):
+                        pass
+                state = formatters.resolve_check_state(
+                    in_universe=in_univ,
+                    is_financial=is_fin,
+                    exclude_financials=exclude_fin,
+                    fund=fund,
+                    signal=signal,
+                    has_open_position=position is not None,
+                )
+                full = formatters.format_check_by_state(
+                    state,
+                    ticker,
+                    fund=fund,
+                    signal=signal,
+                    position=position,
+                    meta=meta,
+                    w_max=_load_w_max(),
+                )
+                marker = "── Chi tiết ──"
+                if marker in full:
+                    detail_body = full.split(marker, 1)[1].strip()
+                    text = f"▾ Chi tiết · {ticker}\n\n{detail_body}"
+                else:
+                    text = f"▾ Chi tiết · {ticker}\n\n{full}"
+                await message.reply_text(text)
                 return
 
             if action == "pnl":
