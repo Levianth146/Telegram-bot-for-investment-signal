@@ -1203,9 +1203,113 @@ def test_garch_same_day_memo(monkeypatch):
     assert fits["n"] == n1  # same-day memo hit
 
 
-def test_garch_refit_every_n_stub_still_fits():
-    """P2-1: refit_every_n set vẫn luôn fit (stub) — không đổi semantics."""
+def test_garch_refit_every_n_should_refit_cadence():
+    """Phần 8.5: should_refit_garch — None/≤0 luôn True; N>0 theo days_since_fit."""
     from quant_engine.risk.garch import should_refit_garch
 
     assert should_refit_garch(days_since_fit=0, refit_every_n=None) is True
-    assert should_refit_garch(days_since_fit=100, refit_every_n=5) is True
+    assert should_refit_garch(days_since_fit=100, refit_every_n=None) is True
+    assert should_refit_garch(days_since_fit=0, refit_every_n=0) is True
+    assert should_refit_garch(days_since_fit=None, refit_every_n=5) is True
+    assert should_refit_garch(days_since_fit=0, refit_every_n=5) is False
+    assert should_refit_garch(days_since_fit=4, refit_every_n=5) is False
+    assert should_refit_garch(days_since_fit=5, refit_every_n=5) is True
+    assert should_refit_garch(days_since_fit=21, refit_every_n=21) is True
+
+
+def test_garch_refit_every_n_forecast_skips_mle(monkeypatch):
+    """Giữa các kỳ refit: dùng forecast roll-forward, không gọi fit_gjr_garch."""
+    from quant_engine.risk import garch as garch_mod
+
+    fits = {"n": 0}
+    real_fit = garch_mod.fit_gjr_garch
+
+    def counting(returns):
+        fits["n"] += 1
+        return real_fit(returns)
+
+    monkeypatch.setattr(garch_mod, "fit_gjr_garch", counting)
+
+    rng = np.random.default_rng(7)
+    rets = pd.Series(rng.normal(0, 0.01, 120))
+
+    first = garch_mod.fit_or_fallback_sigma(
+        rets, refit_every_n=5, days_since_fit=None, previous_model=None
+    )
+    assert first["refit"] is True
+    assert first["method"] == "gjr_garch"
+    assert fits["n"] == 1
+    model = first["model"]
+    assert model is not None
+
+    mid = garch_mod.fit_or_fallback_sigma(
+        rets, refit_every_n=5, days_since_fit=2, previous_model=model
+    )
+    assert mid["refit"] is False
+    assert mid["method"] == "gjr_garch_forecast"
+    assert fits["n"] == 1  # không MLE thêm
+    assert mid["model"] is model
+
+    again = garch_mod.fit_or_fallback_sigma(
+        rets, refit_every_n=5, days_since_fit=5, previous_model=model
+    )
+    assert again["refit"] is True
+    assert fits["n"] == 2
+
+
+def test_garch_state_cache_refit_across_sessions(monkeypatch):
+    """garch_state_cache: N=5 → MLE phiên 1 và 6; giữa đó forecast."""
+    from quant_engine import signal_engine as se
+    from quant_engine.risk import garch as garch_mod
+
+    fits = {"n": 0}
+    real_fit = garch_mod.fit_gjr_garch
+
+    def counting(returns):
+        fits["n"] += 1
+        return real_fit(returns)
+
+    monkeypatch.setattr(garch_mod, "fit_gjr_garch", counting)
+
+    idx = pd.bdate_range("2023-01-02", periods=130).strftime("%Y-%m-%d")
+    closes = {
+        "AAA": pd.Series(
+            100 + np.cumsum(np.random.default_rng(0).normal(0, 1, 130)),
+            index=list(idx),
+        ),
+        "VNINDEX": pd.Series(
+            1000 + np.cumsum(np.random.default_rng(1).normal(0, 1, 130)),
+            index=list(idx),
+        ),
+    }
+    cfg = {
+        "quant_engine": {
+            "benchmark": "VNINDEX",
+            "parallel_workers": 1,
+            "regime_markov": {"enabled": False},
+            "alpha_kalman_trend": {"enabled": False},
+            "alpha_ou_meanreversion": {"enabled": False},
+            "risk_garch": {"enabled": True, "refit_every_n": 5},
+        }
+    }
+    state: dict = {}
+    day_cache: dict = {}
+    # 6 phiên tín hiệu cách nhau → days_since_fit 0..5; MLE ở phiên 1 và 6.
+    as_ofs = [idx[80], idx[90], idx[100], idx[110], idx[120], idx[129]]
+    methods = []
+    for as_of in as_ofs:
+        day_cache.clear()  # mỗi as_of mới — không dùng same-day memo xuyên phiên
+        se.generate_signals(
+            closes,
+            as_of_date=as_of,
+            signal_tickers=["AAA"],
+            config=cfg,
+            garch_cache=day_cache,
+            garch_state_cache=state,
+        )
+        methods.append(state["AAA"].get("days_since_fit"))
+
+    assert fits["n"] == 2
+    assert methods[0] == 0
+    assert methods[-1] == 0
+    assert state["AAA"]["model"] is not None

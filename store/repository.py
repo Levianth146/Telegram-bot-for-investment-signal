@@ -129,19 +129,29 @@ def get_market_regime_history(
 
 
 def get_latest_fundamental_scores(
-    conn: sqlite3.Connection, tickers: list[str] | None = None
+    conn: sqlite3.Connection,
+    tickers: list[str] | None = None,
+    *,
+    as_of_date: str | None = None,
 ) -> dict[str, dict]:
-    """Latest fundamental_scores row per ticker (by filed_at) for Alpha_effective."""
+    """Điểm fundamental mới nhất mỗi mã với ``filed_at <= as_of`` (PIT).
+
+    ``as_of_date`` mặc định = hôm nay (ISO). Khác ``get_sector_overview`` đã lọc PIT.
+    """
+    from datetime import date as _date
+
+    as_of = as_of_date or _date.today().isoformat()
     if tickers:
         placeholders = ",".join("?" for _ in tickers)
-        params: list = [t.strip().upper() for t in tickers]
+        params: list = [as_of, *[t.strip().upper() for t in tickers]]
         sql = f"""
             SELECT f.*
             FROM fundamental_scores f
             INNER JOIN (
                 SELECT ticker, MAX(filed_at) AS max_filed
                 FROM fundamental_scores
-                WHERE ticker IN ({placeholders})
+                WHERE filed_at <= ?
+                  AND ticker IN ({placeholders})
                 GROUP BY ticker
             ) latest
               ON f.ticker = latest.ticker AND f.filed_at = latest.max_filed
@@ -155,10 +165,12 @@ def get_latest_fundamental_scores(
             INNER JOIN (
                 SELECT ticker, MAX(filed_at) AS max_filed
                 FROM fundamental_scores
+                WHERE filed_at <= ?
                 GROUP BY ticker
             ) latest
               ON f.ticker = latest.ticker AND f.filed_at = latest.max_filed
-            """
+            """,
+            (as_of,),
         )
     return {str(row["ticker"]).upper(): dict(row) for row in cur.fetchall()}
 
@@ -463,6 +475,26 @@ def get_sector_for_ticker(conn: sqlite3.Connection, ticker: str) -> dict | None:
     )
     row = cur.fetchone()
     return dict(row) if row else None
+
+
+def get_sector_unknown_share(conn: sqlite3.Connection) -> float | None:
+    """Tỷ lệ mã ``industry`` UNKNOWN / thiếu trong ``sector_mapping`` (0..1).
+
+    ``None`` khi bảng trống — caller hiển thị cảnh báo thiếu mapping, không %,
+    """
+    row = conn.execute("SELECT COUNT(*) AS n FROM sector_mapping").fetchone()
+    n = int(row["n"] if row is not None else 0)
+    if n <= 0:
+        return None
+    unk = conn.execute(
+        """
+        SELECT COUNT(*) AS n FROM sector_mapping
+        WHERE industry IS NULL
+           OR TRIM(industry) = ''
+           OR UPPER(TRIM(industry)) = 'UNKNOWN'
+        """
+    ).fetchone()
+    return float(unk["n"]) / float(n)
 
 
 def get_markets_for_tickers(

@@ -269,13 +269,95 @@ def test_watchlist_as_of_copy_says_annual_bctc_not_quarter():
     )
     assert "BCTC năm" in wl
     assert "31/03/2026" in wl
-    assert "quý lịch" in wl.casefold()
+    assert "quý" in wl.casefold()  # phủ định «theo quý», không nhầm BCTC quý
+    assert "FPT" not in wl  # opener collapse — mã sau nút
+    wl_pass = formatters.format_watchlist(
+        [
+            {"as_of_date": "2026-03-31", "ticker": "FPT", "fundamental_view": "PASS"},
+            {"as_of_date": "2026-03-31", "ticker": "VNM", "fundamental_view": "WATCH"},
+        ],
+        view_filter="PASS",
+    )
+    assert "FPT" in wl_pass and "VNM" not in wl_pass
     sec = formatters.format_sector_overview(
         [{"industry": "Công nghệ", "n_pass": 1, "n_watch": 0, "n_fail": 0}],
         as_of="2026-03-31",
     )
     assert "BCTC năm" in sec
     assert "quý lịch" in sec.casefold()
+
+
+def test_ux_check_summary_hides_raw_metrics():
+    """UX Redesign: tin đầu /check không chứa t-stat/EPS thô; detail có."""
+    signal = {
+        "ticker": "FPT",
+        "date": "2024-06-28",
+        "action": "WATCH",
+        "score": -0.67,
+        "p_regime": 0.2,
+        "sigma_hat": 0.02,
+        "stop": 100.0,
+        "size": 0.0,
+        "reason_json": '{"slope_tstat": -0.56}',
+    }
+    fund = {
+        "fundamental_view": "PASS",
+        "growth_score": 70,
+        "quality_score": 65,
+        "safety_score": 60,
+        "valuation_score": 55,
+        "headline_json": (
+            '{"headline": {"growth": {"metric": "eps_cagr_3y", "value": 0.12}, '
+            '"quality": {"metric": "roic", "value": 0.18}, '
+            '"safety": {"metric": "net_debt_to_ebitda", "value": 0.5}, '
+            '"valuation": {"metric": "pe", "value": 15}}}'
+        ),
+    }
+    full = formatters.format_signal_message(signal, fund)
+    summary = formatters.check_summary_text(full)
+    detail = formatters.check_detail_text(full, ticker="FPT")
+    assert "t-stat" not in summary.casefold()
+    assert "EPS CAGR" not in summary
+    assert "Điểm tổng hợp" not in summary
+    assert formatters.DISCLAIMER in summary
+    assert "t-stat" in detail.casefold()
+    assert "Điểm tổng hợp" in detail or "EPS" in detail
+
+
+def test_ux_signals_summary_no_ticker_dump():
+    """Tin đầu /signals chỉ đếm + khí hậu; danh sách sau action_filter."""
+    rows = [
+        {
+            "date": "2024-06-28",
+            "ticker": "VNM",
+            "action": "BUY",
+            "score": 1.2,
+            "p_regime": 0.2,
+            "sigma_hat": 0.02,
+            "size": 0.05,
+        },
+        {
+            "date": "2024-06-28",
+            "ticker": "FPT",
+            "action": "WATCH",
+            "score": 0.1,
+            "p_regime": 0.2,
+            "sigma_hat": 0.02,
+            "size": 0.05,
+        },
+    ]
+    opener = formatters.format_signals_summary(rows)
+    assert "VNM" not in opener and "điểm 1.2" not in opener
+    assert "theo dõi" in opener.casefold()
+    assert formatters.DISCLAIMER in opener
+    assert "lọc quý" not in opener.casefold()
+    listed = formatters.format_signals_list(rows, action_filter="BUY", page=0)
+    assert "VNM" in listed and "điểm" in listed
+
+
+def test_ux_short_disclaimer_constant():
+    assert formatters.DISCLAIMER == "⚠ Học thuật · không phải tư vấn đầu tư."
+    assert "chứng chỉ hành nghề" not in formatters.DISCLAIMER
 
 
 def test_action_changes_alert_format():
@@ -425,7 +507,7 @@ def _actions_from_rows(rows: list[list[tuple[str, str]]]) -> set[str]:
 
 
 def test_check_keyboard_by_state_c2():
-    """C-4.1 — đúng bộ nút theo từng state (có giá); E-1 thêm ▾ Xem chi tiết."""
+    """C-4.1 — đúng bộ nút theo từng state (có giá); E-1 ▾ Xem đầy đủ số liệu."""
     t = "MWG"
     # OUT / EXCLUDED → chỉ TA khi có giá (không detail — message đã ngắn)
     for st in (
@@ -462,14 +544,16 @@ def test_check_keyboard_by_state_c2():
         acts = _actions_from_rows(
             formatters.check_keyboard_rows(st, t, has_price_bars=True)
         )
-        assert acts == {"detail", "price", "radar", "ta", "watch_add"}
+        assert acts == {"detail", "price", "radar", "ta"}
 
     pos_acts = _actions_from_rows(
         formatters.check_keyboard_rows(
             formatters.CHECK_POSITION, t, has_price_bars=True
         )
     )
-    assert pos_acts == {"detail", "pnl", "price", "radar", "ta", "watch_add"}
+    assert pos_acts == {"detail", "pnl", "price", "radar", "ta"}
+    # watch_add đã ẩn (Round 2 Phase 2)
+    assert "watch_add" not in pos_acts
     # detail đứng trước các nút base
     flat = [
         a
@@ -480,6 +564,7 @@ def test_check_keyboard_by_state_c2():
     ]
     assert flat[0][1].startswith("chk:detail:")
     assert any(cb.startswith("chk:pnl:") for _lab, cb in flat)
+    assert not any("Theo dõi" in lab for lab, _cb in flat)
 
 
 def test_check_keyboard_callback_len_and_build():

@@ -216,3 +216,55 @@ def test_build_scoring_frames_and_score(tmp_path):
     assert len(records["fundamental_scores"]) == 2
     assert all(r["filed_at"] == "2025-03-31" for r in records["fundamental_scores"])
     assert all(r["fundamental_view"] in {"PASS", "WATCH"} for r in records["watchlist"])
+
+
+def test_build_scoring_frames_from_providers_passes_mode(monkeypatch):
+    """Caller truyền mode live/backtest xuống get_financial_statement_provider."""
+    from data.ingest import scoring_frames as sf
+
+    seen: dict[str, str] = {}
+
+    class _DummyFS:
+        name = "dummy"
+
+        def get_annual(self, ticker, year):
+            return None
+
+    class _DummyPrice:
+        name = "dummy"
+
+        def get_close(self, ticker, as_of_date=None):
+            return None
+
+    class _DummySector:
+        name = "dummy"
+
+        def get_industry(self, ticker):
+            return None
+
+    def fake_fs(cfg, *, mode="live"):
+        seen["mode"] = mode
+        return _DummyFS()
+
+    monkeypatch.setattr(
+        "data.providers.get_financial_statement_provider", fake_fs
+    )
+    monkeypatch.setattr(
+        "data.providers.get_price_provider", lambda cfg: _DummyPrice()
+    )
+    monkeypatch.setattr(
+        "data.providers.get_sector_provider", lambda cfg: _DummySector()
+    )
+    monkeypatch.setattr(
+        "data.providers.load_pipeline_config", lambda: {}
+    )
+
+    sf.build_scoring_frames_from_providers(
+        ["AAA"], 2023, 2024, config={}, mode="live"
+    )
+    assert seen["mode"] == "live"
+
+    sf.build_scoring_frames_from_providers(
+        ["AAA"], 2023, 2024, config={}, mode="backtest"
+    )
+    assert seen["mode"] == "backtest"

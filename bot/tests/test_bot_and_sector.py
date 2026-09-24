@@ -261,12 +261,18 @@ def test_formatters_regime_and_check():
     assert "/signals" in welcome and "/positions" in welcome
     assert "Thị trường" in welcome or "cơ hội" in welcome
     assert "/check FPT" in welcome
+    assert "/tinhtrangdulieu" in welcome
     assert "/subscribe" not in welcome  # E-3: đẩy xuống /help
+    # UX Redesign: không lặp EOD ở /start
+    assert "không realtime" not in welcome.casefold()
+    assert formatters.DISCLAIMER in welcome
     help_txt = formatters.format_help()
     assert "/check <mã>" in help_txt and "Tham khảo thêm" in help_txt
     assert "Khám phá thị trường" in help_txt
     assert "Tra cứu 1 mã" in help_txt
     assert "Quản lý vị thế" in help_txt
+    assert "ví dụ: /check FPT" in help_txt
+    assert "/tinhtrangdulieu" in help_txt
     assert "trần %/mã" in help_txt or "trần" in help_txt
     assert "w_max" not in help_txt
     assert "chia đều" not in help_txt or "không chia đều" in help_txt
@@ -355,15 +361,35 @@ def test_formatters_regime_and_check():
     assert "rất nhỏ" in tiny
     assert "nghiêng giảm" in tiny or "đi ngang" in tiny
     assert formatters.format_signals_list([])
+    # Round2: 0 mã đáng chú ý → giải thích (không để số trơ)
+    zero_buy = formatters.format_signals_list(
+        [
+            {
+                "date": "2024-06-28",
+                "ticker": "FPT",
+                "action": "WATCH",
+                "score": 0.1,
+                "p_regime": 0.4,
+                "sigma_hat": 0.02,
+                "size": 0.05,
+            }
+        ]
+    )
+    assert "đáng chú ý (0)" in zero_buy.casefold() or "đáng chú ý (0)" in zero_buy
+    assert "chưa có mã đạt đủ điều kiện mua" in zero_buy.casefold()
     regime_bear = formatters.format_regime_message(0.1, "2024-06-28")
-    assert "nghiêng giảm" in regime_bear
-    assert "Kết luận:" in regime_bear
+    assert "nghiêng giảm" in regime_bear.casefold()
+    assert "🔴" in regime_bear  # đèn giao thông
+    assert "điểm" in regime_bear.casefold()
+    assert "24/06/2024" in regime_bear or "28/06/2024" in regime_bear or "2024" in regime_bear
     assert "nghiêng tăng ~" not in regime_bear
+    assert "Ảnh hưởng" in regime_bear or "vì sao" in regime_bear.casefold()
     regime_cmp = formatters.format_regime_message(
         0.6, "2024-06-28", prev_p_bull=0.4
     )
-    assert "So với phiên trước" in regime_cmp
+    assert "So với hôm qua" in regime_cmp or "So với phiên trước" in regime_cmp
     assert "đã chuyển" in regime_cmp
+    assert "🟢" in regime_cmp
     regime_same = formatters.format_regime_message(
         0.6, "2024-06-28", prev_p_bull=0.58
     )
@@ -374,8 +400,19 @@ def test_formatters_regime_and_check():
             {"as_of_date": "2024-01-01", "ticker": "BBB", "fundamental_view": "WATCH"},
         ]
     )
-    assert "Đạt" in wl and "Theo dõi" in wl and "AAA" in wl
-    # UX mới: Rổ lọc + ngày VI
+    assert "ĐẠT" in wl.upper() or "Đạt" in wl
+    assert "THEO DÕI" in wl.upper() or "Theo dõi" in wl
+    # Opener không dump mã — mã chỉ sau view_filter
+    assert "AAA" not in wl
+    wl_pass = formatters.format_watchlist(
+        [
+            {"as_of_date": "2024-01-01", "ticker": "AAA", "fundamental_view": "PASS"},
+            {"as_of_date": "2024-01-01", "ticker": "BBB", "fundamental_view": "WATCH"},
+        ],
+        view_filter="PASS",
+    )
+    assert "AAA" in wl_pass and "BBB" not in wl_pass
+    # UX mới: Rổ lọc + ngày VI + ghi chú BCTC năm
     wl2 = formatters.format_watchlist(
         [
             {"as_of_date": "2025-03-31", "ticker": "AAA", "fundamental_view": "PASS"},
@@ -385,7 +422,11 @@ def test_formatters_regime_and_check():
     assert "Rổ lọc doanh nghiệp" in wl2
     assert "31/03/2025" in wl2
     assert "Không phải ngày giao dịch" in wl2 or "không phải ngày giao dịch" in wl2
-    assert "Chưa có vị thế giấy" in formatters.format_positions([])
+    assert "BCTC năm" in wl2 and "không" in wl2.casefold() and "quý" in wl2.casefold()
+    empty_pos = formatters.format_positions([])
+    assert "Chưa có vị thế giấy" in empty_pos
+    assert "tín hiệu BÁN" in empty_pos or "BÁN" in empty_pos
+    assert "tham khảo" in empty_pos.casefold()
     pos = formatters.format_positions(
         [
             {
@@ -397,16 +438,39 @@ def test_formatters_regime_and_check():
             }
         ],
         last_closes={"GAS": 96.25},
+        as_of="2026-09-24",
     )
     assert "Vị thế giấy" in pos
-    assert "21/09/2026" in pos
-    assert "10.0%" in pos or "Tỷ trọng" in pos
-    assert "∑" in pos or "trần" in pos
+    assert "giữ 3 phiên" in pos
+    assert "Dữ liệu tính đến phiên" in pos
+    assert "tham khảo" in pos.casefold()
+    assert "10.0%" in pos or "tỷ trọng" in pos.casefold()
     assert "chạm trần" in pos
     assert "tổng p/l" in pos.casefold()
     assert "w_max" not in pos
-    # entry 87.5 → 96.25 = +10%
-    assert "10.0%" in pos or "+10" in pos or "10%" in pos
+    # entry 87.5 → 96.25 = +10%; icon 🟢 trên opener
+    assert "🟢" in pos
+    assert "+10" in pos or "10.0%" in pos or "10%" in pos
+    # Giá vào / cắt lỗ chỉ trong detail
+    assert "Giá vào" not in pos
+    pos_detail = formatters.format_positions(
+        [
+            {
+                "ticker": "GAS",
+                "entry_price": 87.5,
+                "stop_price": 83.5,
+                "size_pct_nav": 0.1,
+                "opened_at": "2026-09-21",
+            }
+        ],
+        last_closes={"GAS": 96.25},
+        as_of="2026-09-24",
+        detail=True,
+    )
+    assert "Giá vào" in pos_detail
+    assert "21/09/2026" in pos_detail
+    assert formatters.holding_sessions_from_opened_at("2026-09-21", "2026-09-21") == 0
+    assert formatters.holding_sessions_from_opened_at("2026-09-21", "2026-09-24") == 3
     empty_bt = formatters.format_backtest_results([], "portfolio")
     assert "Chưa có báo cáo kiểm thử" in empty_bt or "Chưa có" in empty_bt
     assert "/signals" in empty_bt and "/watchlist" in empty_bt
@@ -454,9 +518,16 @@ def test_formatters_regime_and_check():
             }
         ],
     )
-    assert "Báo cáo kiểm thử" in filled_bt
-    assert "Kết luận:" in filled_bt
-    assert "không cam kết" in filled_bt.casefold() or "không phải lãi" in filled_bt.casefold()
+    assert "kiểm thử" in filled_bt.casefold()
+    assert "Sharpe" in filled_bt and ("thấp hơn" in filled_bt or "🔴" in filled_bt)
+    assert (
+        "không cam kết" in filled_bt.casefold()
+        or "không phải lãi" in filled_bt.casefold()
+        or "ngoài mẫu" in filled_bt.casefold()
+    )
+    # Round2: giải thích B0 n_trades=0 vẫn có Sharpe
+    assert "không có «lệnh»" in filled_bt or "không có 'lệnh'" in filled_bt or "mua đầu" in filled_bt.casefold()
+    assert "hàng ngày" in filled_bt.casefold() or "không phụ thuộc số lệnh" in filled_bt.casefold()
     assert "Sortino" in filled_bt
     assert "phát hiện hợp lệ" in filled_bt.casefold()
     assert "Cải thiện Sharpe" in filled_bt or "❌" in filled_bt
@@ -493,7 +564,7 @@ def test_formatters_regime_and_check():
         [{"industry": "Thực phẩm", "n_pass": 1, "n_watch": 0, "n_fail": 2}],
         "2024-06-28",
     )
-    assert "loại 2" in sec_txt
+    assert "loại" in sec_txt and "2" in sec_txt
     assert "28/06/2024" in sec_txt
     empty_bt2 = formatters.format_backtest_results(
         [], "portfolio", available_scopes=["ablation_demo"]
@@ -513,6 +584,57 @@ def test_formatters_regime_and_check():
     assert "Khí hậu thị trường: BẬT" in status
     assert "Tối ưu tỷ trọng nâng cao: tắt" in status
     assert "regime_markov: ON" not in status
+    assert "Tình trạng dữ liệu" in status  # /status mirror /tinhtrangdulieu
+    assert "/tinhtrangdulieu" in status
+    assert "EOD" in status or "realtime" in status.casefold()
+    assert "Dữ liệu tính đến phiên" in status
+
+    tinh = formatters.format_tinh_trang_du_lieu(
+        latest_signal_date="2024-06-28",
+        watchlist_n=2,
+        open_positions_n=1,
+    )
+    assert "Tình trạng dữ liệu" in tinh
+    assert "chỉ đọc dữ liệu đã tính sẵn" in tinh.casefold() or "không gọi realtime" in tinh.casefold()
+    assert "daily_job" in tinh or "EOD" in tinh
+    assert "quarterly_job" in tinh or "BCTC" in tinh
+    assert "rà lại định kỳ" in tinh.casefold() or "~3 tháng" in tinh
+    assert "lịch quý" not in tinh.casefold()
+    assert "Cờ mô hình" not in tinh  # lệnh riêng không nhồi cờ (status mới có)
+
+    # UNKNOWN > 10% → cảnh báo trên /sector và /status
+    high_unk = formatters.format_sector_overview(
+        [
+            {"industry": "UNKNOWN", "n_pass": 0, "n_watch": 0, "n_fail": 0, "n_total": 20},
+            {"industry": "Thực phẩm", "n_pass": 1, "n_watch": 0, "n_fail": 0, "n_total": 5},
+        ],
+        "2024-06-28",
+    )
+    assert "Cảnh báo" in high_unk
+    assert (
+        "UNKNOWN" in high_unk
+        or "thiếu" in high_unk.casefold()
+        or "chưa xác định ngành" in high_unk.casefold()
+    )
+    assert "/tinhtrangdulieu" in high_unk
+    assert "không phải lỗi hiển thị" in high_unk.casefold()
+    status_warn = formatters.format_status(
+        config_flags={"regime_markov": True},
+        latest_signal_date=None,
+        watchlist_n=0,
+        open_positions_n=0,
+        unknown_sector_share=0.25,
+    )
+    assert "Cảnh báo" in status_warn
+    low = formatters.format_unknown_sector_warning(0.05)
+    assert low is None
+
+    # /check header có timestamp khi meta.as_of
+    chk_ts = formatters.format_check_out_of_scope(
+        "XYZ", meta={"as_of": "2024-06-28", "last_close": 10.0}
+    )
+    assert "Dữ liệu tính đến phiên" in chk_ts
+    assert "28/06/2024" in chk_ts
 
 
 def test_subscribe_helpers(tmp_path):
@@ -603,7 +725,9 @@ def test_backtest_and_regime_and_start_keyboards():
 
     start_kb = formatters.build_start_reply_keyboard()
     labels = [b.text for row in start_kb.keyboard for b in row]
-    assert labels == ["/check", "/signals", "/regime", "/positions"]
+    assert "/check" in labels and "/signals" in labels
+    assert "/regime" in labels and "/positions" in labels
+    assert "/tinhtrangdulieu" in labels
 
 
 def test_callback_handler_answers_and_no_network(tmp_path, monkeypatch):
@@ -670,3 +794,145 @@ def test_watch_add_ack_copy():
     off = formatters.format_watch_add_ack("XYZ", on_system_watchlist=False)
     assert "FPT" in on and "rổ theo dõi" in on
     assert "XYZ" in off and "chưa có" in off.casefold()
+
+
+def test_check_cmd_text_only_no_auto_photo(tmp_path, monkeypatch):
+    """Phần 4: /check chỉ reply_text (+ keyboard); không reply_photo."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    db = tmp_path / "bot.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db))
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    # Đủ bars + fund PASS để trước đây đã auto-send nhiều PNG.
+    repository.upsert_price_bars(
+        conn,
+        [
+            {
+                "ticker": "FPT",
+                "date": f"2024-01-{i:02d}",
+                "open": 10.0,
+                "high": 11.0,
+                "low": 9.0,
+                "close": 10.0 + i * 0.1,
+                "volume": 1_000_000,
+            }
+            for i in range(1, 28)
+        ],
+    )
+    repository.upsert_fundamental_scores(
+        conn,
+        [
+            {
+                "ticker": "FPT",
+                "filed_at": "2024-03-31",
+                "period": "2023",
+                "growth_score": 70,
+                "quality_score": 65,
+                "safety_score": 60,
+                "valuation_score": 55,
+                "fundamental_view": "PASS",
+                "headline_json": "{}",
+            }
+        ],
+    )
+    conn.close()
+    monkeypatch.setattr(
+        "bot.main._universe_and_finance_flags",
+        lambda _t: (True, False, True),
+    )
+
+    from bot import main as bot_main
+
+    app = bot_main.build_application("test-token-unused")
+    check_handler = None
+    for handlers in app.handlers.values():
+        for h in handlers:
+            cmds = getattr(h, "commands", None) or set()
+            if "check" in cmds:
+                check_handler = h
+                break
+        if check_handler:
+            break
+    assert check_handler is not None
+
+    reply_text = AsyncMock()
+    reply_photo = AsyncMock()
+    update = SimpleNamespace(
+        message=SimpleNamespace(reply_text=reply_text, reply_photo=reply_photo)
+    )
+    context = SimpleNamespace(args=["FPT"], user_data={})
+
+    async def _run():
+        await check_handler.callback(update, context)
+
+    asyncio.run(_run())
+    assert reply_text.await_count == 1
+    assert reply_photo.await_count == 0
+    # Keyboard vẫn đi kèm (reply_markup)
+    call_kwargs = reply_text.await_args.kwargs
+    assert call_kwargs.get("reply_markup") is not None
+
+
+def test_bt_b0_callback_passes_framework_and_b0(tmp_path, monkeypatch):
+    """Phần 5: bt:b0 gọi render với baselines=[framework, B0_buyhold]."""
+    import asyncio
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+    from pathlib import Path
+
+    db = tmp_path / "bot.db"
+    monkeypatch.setenv("DATABASE_PATH", str(db))
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    conn.close()
+
+    captured: dict = {}
+
+    def _fake_render(scope, run_id, out_path, **kwargs):
+        captured["baselines"] = kwargs.get("baselines")
+        captured["scope"] = scope
+        captured["run_id"] = run_id
+        p = Path(out_path)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+        return p
+
+    monkeypatch.setattr(
+        "bot.charts.render_backtest_equity_curve_chart", _fake_render
+    )
+
+    from bot import main as bot_main
+
+    app = bot_main.build_application("test-token-unused")
+    cb_handler = None
+    for handlers in app.handlers.values():
+        for h in handlers:
+            if h.__class__.__name__ == "CallbackQueryHandler":
+                cb_handler = h
+                break
+    assert cb_handler is not None
+
+    answer = AsyncMock()
+    reply_photo = AsyncMock()
+    reply_text = AsyncMock()
+    query = SimpleNamespace(
+        data="bt:b0:run_demo",
+        answer=answer,
+        message=SimpleNamespace(
+            reply_text=reply_text,
+            reply_photo=reply_photo,
+        ),
+    )
+    update = SimpleNamespace(callback_query=query)
+    context = SimpleNamespace(user_data={"bt_scope": "portfolio"}, args=None)
+
+    async def _run():
+        await cb_handler.callback(update, context)
+
+    asyncio.run(_run())
+    answer.assert_awaited()
+    assert captured.get("baselines") == ["framework", "B0_buyhold"]
+    assert reply_photo.await_count == 1

@@ -1,0 +1,69 @@
+=== BACKTEST SMOKE PROFILE ===
+elapsed_sec=7.4790
+parallel_workers=1
+n_tickers=6 n_days=80
+n_trades=5
+equity_points=80
+with_fundamentals=False
+signal_every=1
+perf_timings={'regime': 0.04255780000676168, 'kalman': 0.4054597999838734, 'garch': 5.2968599000014365}
+
+--- top 20 by cumtime ---
+         6153803 function calls (6040968 primitive calls) in 7.474 seconds
+
+   Ordered by: cumulative time
+   List reduced from 7775 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+      196    0.009    0.000   10.042    0.051 __init__.py:1(<module>)
+        1    0.000    0.000    7.479    7.479 profile_backtest_smoke.py:98(run_smoke)
+        1    0.010    0.010    6.614    6.614 engine.py:197(run_backtest)
+       80    0.025    0.000    6.496    0.081 signal_engine.py:355(generate_signals)
+       80    0.003    0.000    5.878    0.073 signal_engine.py:195(_run_ticker_hotpaths)
+      306    0.013    0.000    5.874    0.019 signal_engine.py:74(_ticker_hotpath_worker)
+      306    0.005    0.000    5.056    0.017 garch.py:91(fit_or_fallback_sigma)
+      306    0.003    0.000    4.814    0.016 garch.py:59(fit_gjr_garch)
+   1646/3    0.017    0.000    2.993    0.998 <frozen importlib._bootstrap>:1349(_find_and_load)
+   1616/3    0.009    0.000    2.992    0.997 <frozen importlib._bootstrap>:1304(_find_and_load_unlocked)
+   1577/4    0.007    0.000    2.991    0.748 <frozen importlib._bootstrap>:911(_load_unlocked)
+   1375/4    0.005    0.000    2.991    0.748 <frozen importlib._bootstrap_external>:989(exec_module)
+   3834/7    0.004    0.000    2.989    0.427 <frozen importlib._bootstrap>:480(_call_with_frames_removed)
+   1718/4    0.048    0.000    2.988    0.747 {built-in method builtins.exec}
+   809/46    0.002    0.000    2.611    0.057 {built-in method builtins.__import__}
+      120    0.013    0.000    2.518    0.021 base.py:617(fit)
+2991/1601    0.007    0.000    2.394    0.001 <frozen importlib._bootstrap>:1390(_handle_fromlist)
+      120    0.006    0.000    2.060    0.017 _minimize.py:53(minimize)
+      120    0.075    0.001    2.032    0.017 _slsqp_py.py:215(_minimize_slsqp)
+     7410    0.214    0.000    1.509    0.000 _numdiff.py:276(approx_derivative)
+
+
+
+--- top 20 by ncalls ---
+         6153803 function calls (6040968 primitive calls) in 7.474 seconds
+
+   Ordered by: call count
+   List reduced from 7775 to 20 due to restriction <20>
+
+   ncalls  tottime  percall  cumtime  percall filename:lineno(function)
+821218/818180    0.197    0.000    0.276    0.000 {built-in method builtins.isinstance}
+442360/401664    0.083    0.000    0.099    0.000 {built-in method builtins.len}
+   206740    0.053    0.000    0.057    0.000 {built-in method builtins.getattr}
+   189812    0.035    0.000    0.035    0.000 {method 'append' of 'list' objects}
+   157209    0.034    0.000    0.034    0.000 {method 'startswith' of 'str' objects}
+   113026    0.030    0.000    0.033    0.000 {method 'get' of 'dict' objects}
+   109440    0.021    0.000    0.021    0.000 {method 'lstrip' of 'str' objects}
+    84917    0.019    0.000    0.019    0.000 {built-in method builtins.min}
+    73215    0.028    0.000    0.028    0.000 {built-in method numpy.asanyarray}
+71011/67011    0.024    0.000    0.838    0.000 {built-in method builtins.hasattr}
+    65792    0.029    0.000    0.070    0.000 generic.py:42(_instancecheck)
+    65792    0.027    0.000    0.039    0.000 generic.py:37(_check)
+    62194    0.045    0.000    0.045    0.000 {method 'astype' of 'numpy.ndarray' objects}
+    61382    0.014    0.000    0.014    0.000 {built-in method builtins.issubclass}
+    57048    0.008    0.000    0.008    0.000 typing.py:2182(cast)
+    56120    0.115    0.000    0.115    0.000 {method 'reduce' of 'numpy.ufunc' objects}
+52740/49165    0.032    0.000    0.193    0.000 {built-in method numpy.asarray}
+49966/49759    0.014    0.000    0.014    0.000 {built-in method builtins.hash}
+    48994    0.026    0.000    0.026    0.000 {method 'reshape' of 'numpy.ndarray' objects}
+    48064    0.007    0.000    0.007    0.000 shape_base.py:17(_atleast_1d_dispatcher)
+
+

@@ -11,6 +11,7 @@ mọi chỉ số CORE trong tin nhắn bot.
 from __future__ import annotations
 
 import json
+from datetime import date, datetime
 from typing import Any, Mapping
 
 # Mã nội bộ (framework) — chỉ dùng trong code/test, không đưa ra tin nhắn bot.
@@ -43,10 +44,56 @@ HEADLINE_METRIC_VI = {
     "pb": "P/B",
 }
 
-DISCLAIMER = (
-    "⚠️ Sản phẩm học thuật — không phải tư vấn đầu tư, "
-    "không thay thế tư vấn từ người có chứng chỉ hành nghề."
-)
+# UX Redesign: một dòng cố định cuối mọi lệnh (tránh lặp đoạn dài).
+DISCLAIMER = "⚠ Học thuật · không phải tư vấn đầu tư."
+
+# Marker tách tóm tắt / chi tiết — tin đầu cắt trước marker; chk:detail lấy phần sau.
+DETAIL_MARKER = "── Chi tiết ──"
+
+
+def academic_disclaimer() -> str:
+    """Disclaimer học thuật ngắn — dùng cuối mọi lệnh Telegram."""
+    return DISCLAIMER
+
+
+def check_summary_text(full: str) -> str:
+    """Tin đầu /check: chỉ phần trước DETAIL_MARKER + disclaimer ngắn."""
+    text = str(full or "")
+    if DETAIL_MARKER in text:
+        head = text.split(DETAIL_MARKER, 1)[0].rstrip()
+        # Bỏ disclaimer dài/ngắn nếu đã có ở cuối head — gắn lại 1 lần.
+        for marker in (DISCLAIMER, "⚠️ Sản phẩm học thuật"):
+            if marker in head:
+                head = head.rsplit(marker, 1)[0].rstrip()
+        return f"{head}\n\n{DISCLAIMER}"
+    return text
+
+
+def check_detail_text(full: str, *, ticker: str = "") -> str:
+    """Nội dung sau khi bấm ▾ Xem đầy đủ số liệu (chk:detail)."""
+    text = str(full or "")
+    t = (ticker or "").strip().upper()
+    prefix = f"▾ Chi tiết · {t}\n\n" if t else "▾ Chi tiết\n\n"
+    if DETAIL_MARKER in text:
+        body = text.split(DETAIL_MARKER, 1)[1].strip()
+        return f"{prefix}{body}"
+    return f"{prefix}{text}"
+
+
+def _pnl_traffic_icon(pnl: float | None) -> str:
+    """🟢 lãi / 🔴 lỗ / ⚪ chưa có P/L — icon trước số có ngưỡng."""
+    if pnl is None:
+        return "⚪"
+    try:
+        v = float(pnl)
+    except (TypeError, ValueError):
+        return "⚪"
+    if v > 0:
+        return "🟢"
+    if v < 0:
+        return "🔴"
+    return "⚪"
+
 
 TA_REFERENCE_LABEL = "📊 Tham khảo thêm (không dùng để ra tín hiệu)"
 
@@ -121,6 +168,21 @@ def regime_label_prefix(p_bull: float | None) -> str:
     return "nghiêng giảm"
 
 
+def regime_traffic_light(p_bull: float | None) -> str:
+    """Đèn giao thông /regime (FinBot-style) — cùng ngưỡng regime_label_prefix."""
+    if p_bull is None:
+        return "⚪"
+    try:
+        p = float(p_bull)
+    except (TypeError, ValueError):
+        return "⚪"
+    if p >= 0.55:
+        return "🟢"
+    if p >= 0.45:
+        return "🟡"
+    return "🔴"
+
+
 def regime_session_compare(
     p_bull: float | None, prev_p_bull: float | None
 ) -> str | None:
@@ -137,6 +199,40 @@ def regime_session_compare(
     if curr == prev:
         return f"So với phiên trước: không đổi ({prev})."
     return f"So với phiên trước: đã chuyển từ {prev} sang {curr}."
+
+
+def _parse_iso_date(value: Any) -> date | None:
+    """Parse YYYY-MM-DD (hoặc datetime ISO) → date; lỗi → None."""
+    if value is None:
+        return None
+    s = str(value).strip()[:10]
+    if not s:
+        return None
+    try:
+        return date.fromisoformat(s)
+    except ValueError:
+        try:
+            return datetime.fromisoformat(str(value).strip().replace("Z", "")).date()
+        except ValueError:
+            return None
+
+
+def holding_sessions_from_opened_at(
+    opened_at: Any,
+    as_of: Any = None,
+) -> int | None:
+    """Số ngày lịch từ opened_at → as_of (hoặc hôm nay) — hiển thị «giữ N phiên».
+
+    Round2: không đếm phiên HOSE riêng; chênh lệch ngày đủ cho UX vị thế giấy.
+    """
+    opened = _parse_iso_date(opened_at)
+    if opened is None:
+        return None
+    end = _parse_iso_date(as_of) if as_of is not None else date.today()
+    if end is None:
+        end = date.today()
+    delta = (end - opened).days
+    return max(0, int(delta))
 
 
 # D-9: tên check kỹ thuật → ngôn ngữ nhà đầu tư (không đổi ngưỡng).
@@ -401,6 +497,13 @@ def _fmt_day_vi(iso: str | None) -> str:
     return s
 
 
+def format_as_of_session_line(as_of: str | None) -> str | None:
+    """Dòng timestamp đồng bộ /check · /positions · /tinhtrangdulieu."""
+    if not as_of:
+        return None
+    return f"Dữ liệu tính đến phiên {_fmt_day_vi(str(as_of)[:10])}"
+
+
 def _reason_payload(signal_row: dict) -> dict:
     raw = signal_row.get("reason_json")
     if isinstance(raw, dict):
@@ -530,46 +633,64 @@ def _headline_block_lines(fundamental_row: Mapping[str, Any]) -> list[str]:
 
 
 def format_welcome() -> str:
-    """/start — 3 CTA theo ban_phac §3; E-3 rút ngắn mô tả + disclaimer."""
+    """/start — mockup UX Redesign: 3 nhánh gọn, không lặp EOD (đẩy sang /tinhtrangdulieu)."""
     return "\n".join(
         [
-            "Xin chào — Bot tín hiệu đầu tư (sản phẩm học thuật).",
-            "Chỉ hiển thị kết quả đã tính sẵn sau mỗi phiên.",
+            "🤖 Bot tín hiệu đầu tư VN — trợ lý phân tích cổ phiếu VN (sản phẩm học thuật)",
             "",
-            "▶ Bắt đầu:",
-            "  📊 Thị trường & cơ hội → /signals",
-            "  🔎 Tra cứu mã → /check FPT",
-            "  💼 Vị thế giấy → /positions",
+            "📊 1. Thị trường & cơ hội hôm nay",
+            "   └ /signals — mã đáng chú ý sau khi lọc theo chiến lược",
+            "   └ /regime — thị trường đang nghiêng tăng hay giảm",
             "",
+            "🔎 2. Tra cứu một mã cụ thể",
+            "   └ /check FPT (ví dụ) — sức khoẻ doanh nghiệp + xu hướng + rủi ro",
+            "   └ Hoặc gõ thẳng mã 3 ký tự",
+            "",
+            "💼 3. Danh mục đang theo dõi",
+            "   └ /positions — vị thế giấy đang mở",
+            "   └ /watchlist — rổ mã đã qua vòng lọc doanh nghiệp",
+            "",
+            "ⓘ /help — đầy đủ lệnh · /tinhtrangdulieu — dữ liệu cập nhật khi nào",
             DISCLAIMER,
         ]
     )
 
 
 def format_help() -> str:
-    """/help — nhóm theo nhu cầu (E-3), không bảng phẳng ~15 lệnh."""
+    """/help — nhóm theo nhu cầu (E-3) + ví dụ cú pháp mỗi lệnh (Round2 Phần 6)."""
     return "\n".join(
         [
             "📖 Hướng dẫn theo nhu cầu",
             "",
             "― Khám phá thị trường ―",
             "• /signals — gợi ý phiên gần nhất",
-            "• /regime — khí hậu thị trường chung",
-            "• /watchlist — rổ sau lọc doanh nghiệp",
+            "  ví dụ: /signals",
+            "• /regime — khí hậu thị trường chung (đèn + điểm)",
+            "  ví dụ: /regime",
+            "• /watchlist — rổ sau lọc doanh nghiệp (BCTC năm)",
+            "  ví dụ: /watchlist",
             "• /sector [ngành] — tổng quan theo ngành",
+            "  ví dụ: /sector   ·  /sector Ngân hàng",
             "",
             "― Tra cứu 1 mã ―",
             "• /check <mã> — kết luận → vì sao → chi tiết",
+            "  ví dụ: /check FPT",
             "• /chart <mã> price|fundamental|risk|ta — biểu đồ tham khảo",
+            "  ví dụ: /chart VNM price",
             "",
             "― Quản lý vị thế ―",
             "• /positions — vị thế giấy + tổng P/L ước tính",
+            "  ví dụ: /positions",
             "• /subscribe · /unsubscribe — bật/tắt tin phiên mới",
+            "  ví dụ: /subscribe",
             "",
             "― Xem thêm ―",
             "• /backtest [scope] — báo cáo kiểm thử ngoài mẫu",
-            "• /chart <mã> prob — mô phỏng xác suất (khi có dữ liệu)",
-            "• /status · /about — cờ hệ thống / giới thiệu",
+            "  ví dụ: /backtest portfolio",
+            "• /tinhtrangdulieu — EOD vs realtime (bot chỉ đọc store)",
+            "  ví dụ: /tinhtrangdulieu",
+            "• /status — mirror tình trạng dữ liệu + cờ hệ thống",
+            "• /about — giới thiệu ngắn",
             "",
             "⚠ Lưu ý hay gây hiểu nhầm:",
             "• «Khí hậu thị trường» trên /signals là chung cả rổ "
@@ -621,11 +742,20 @@ def _signals_by_action(normalised: list[dict]) -> dict[str, list[dict]]:
     return by_action
 
 
-def signals_total_pages(signal_rows: list[dict]) -> int:
+def signals_total_pages(signal_rows: list[dict], *, action_filter: str | None = None) -> int:
     """Số trang /signals (1 khi rỗng hoặc đủ ngắn cho 1 trang)."""
     if not signal_rows:
         return 1
     by_action = _signals_by_action(_normalise_signal_rows(signal_rows))
+    filt = str(action_filter or "").upper() or None
+    if filt in ("BUY", "WATCH", "SELL"):
+        n = len(by_action[filt])
+        size = {
+            "BUY": SIGNALS_PAGE_SIZE_NOTABLE,
+            "WATCH": SIGNALS_PAGE_SIZE_WATCH,
+            "SELL": SIGNALS_PAGE_SIZE_SELL,
+        }[filt]
+        return max(1, (n + size - 1) // size) if n else 1
     n_buy = len(by_action["BUY"])
     n_watch = len(by_action["WATCH"])
     n_sell = len(by_action["SELL"])
@@ -638,38 +768,116 @@ def signals_total_pages(signal_rows: list[dict]) -> int:
     return pages
 
 
-def format_signals_list(
-    signal_rows: list[dict],
-    *,
-    w_max: float = 0.10,
-    page: int | None = None,
-) -> str:
-    """/signals — nhóm theo độ mạnh (ban_phac §4), không alphabet-first.
+def signals_action_counts(signal_rows: list[dict]) -> dict[str, int]:
+    """Đếm BUY/WATCH/SELL sau cap fundamental — dùng opener keyboard."""
+    by_action = _signals_by_action(_normalise_signal_rows(signal_rows))
+    return {
+        "BUY": len(by_action["BUY"]),
+        "WATCH": len(by_action["WATCH"]),
+        "SELL": len(by_action["SELL"]),
+    }
 
-    Size hiển thị = GARCH position_size (≠ equal-weight / BL).
 
-    ``page``: 0-based; ``None`` = in hết (tương thích test/chunk dài).
-    Bot dùng ``page=0`` (+ nút phân trang) theo Phần C UX.
-    """
-    if not signal_rows:
-        return (
-            "📭 Chưa có tín hiệu phiên nào trong store.\n\n"
-            "Danh sách này chỉ phản ánh mã thuộc pipeline chiến lược "
-            "(watchlist sau lọc quý + daily Quant) — không phải toàn bộ thị trường.\n\n"
-            "Tiếp: /subscribe · /watchlist\n\n"
-            + DISCLAIMER
-        )
-
-    day = signal_rows[0].get("date") or ""
+def _signals_shared_p_regime(signal_rows: list[dict]) -> float | None:
     p_vals = [
         float(r["p_regime"])
         for r in signal_rows
         if r.get("p_regime") is not None
     ]
-    p_shared = None
-    if p_vals:
-        p_vals_sorted = sorted(p_vals)
-        p_shared = p_vals_sorted[len(p_vals_sorted) // 2]
+    if not p_vals:
+        return None
+    p_vals_sorted = sorted(p_vals)
+    return p_vals_sorted[len(p_vals_sorted) // 2]
+
+
+def format_signals_summary(
+    signal_rows: list[dict],
+    *,
+    w_max: float = 0.10,
+) -> str:
+    """Tin đầu /signals — chỉ kết luận + khí hậu; danh sách mã sau nút bấm."""
+    if not signal_rows:
+        return (
+            "📭 Chưa có tín hiệu phiên nào trong store.\n\n"
+            "Danh sách này chỉ phản ánh mã thuộc pipeline chiến lược "
+            "(watchlist sau lần rà lọc doanh nghiệp gần nhất + daily Quant) "
+            "— không phải toàn bộ thị trường.\n\n"
+            "Tiếp: /subscribe · /watchlist\n\n"
+            + DISCLAIMER
+        )
+
+    day = signal_rows[0].get("date") or ""
+    day_vi = _fmt_day_vi(str(day)[:10]) if day else ""
+    by_action = _signals_by_action(_normalise_signal_rows(signal_rows))
+    n_buy = len(by_action["BUY"])
+    n_watch = len(by_action["WATCH"])
+    n_sell = len(by_action["SELL"])
+    p_shared = _signals_shared_p_regime(signal_rows)
+
+    buy_icon = "🟢" if n_buy > 0 else "🔴"
+    lines = [
+        (
+            f"📋 Tín hiệu phiên {day_vi or 'gần nhất'} — "
+            f"{buy_icon} {n_buy} mã đáng mua · "
+            f"🟡 {n_watch} theo dõi · ⚫ {n_sell} tránh mua mới"
+        ),
+        "",
+    ]
+    if p_shared is not None:
+        # Mockup: 1 câu khí hậu → hạn chế mua mới khi nghiêng giảm.
+        if float(p_shared) < 0.45 and n_buy == 0:
+            lines.append(
+                f"Thị trường chung đang {regime_label_prefix(p_shared)} "
+                f"({translate_regime(p_shared)}) → hệ thống KHÔNG đề xuất mã mua mới "
+                "phiên này, kể cả mã doanh nghiệp tốt."
+            )
+        else:
+            pct = f"{float(p_shared) * 100:.0f}%"
+            lines.append(
+                f"→ Khí hậu chung: {regime_label_prefix(p_shared)} (~{pct}) — "
+                f"{translate_regime(p_shared)}"
+            )
+        lines.append("")
+    lines.extend(
+        [
+            "Chỉ mã thuộc pipeline chiến lược — không đại diện toàn thị trường.",
+            f"Tỷ trọng gợi ý = theo biến động mục tiêu, trần "
+            f"{float(w_max) * 100:.0f}%/mã — không chia đều.",
+            "",
+            "Bấm nút bên dưới để xem danh sách mã (điểm · biến động · tỷ trọng).",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_signals_list(
+    signal_rows: list[dict],
+    *,
+    w_max: float = 0.10,
+    page: int | None = None,
+    action_filter: str | None = None,
+) -> str:
+    """Danh sách /signals theo nhóm (sau nút bấm) hoặc full khi ``page is None``.
+
+    Size hiển thị = GARCH position_size (≠ equal-weight / BL).
+
+    ``page``: 0-based; ``None`` = in hết (tương thích test/chunk dài).
+    ``action_filter``: BUY|WATCH|SELL — chỉ một nhóm (UX collapse).
+    """
+    if not signal_rows:
+        return (
+            "📭 Chưa có tín hiệu phiên nào trong store.\n\n"
+            "Danh sách này chỉ phản ánh mã thuộc pipeline chiến lược "
+            "(watchlist sau lần rà lọc doanh nghiệp gần nhất + daily Quant) "
+            "— không phải toàn bộ thị trường.\n\n"
+            "Tiếp: /subscribe · /watchlist\n\n"
+            + DISCLAIMER
+        )
+
+    day = signal_rows[0].get("date") or ""
+    p_shared = _signals_shared_p_regime(signal_rows)
 
     normalised = _normalise_signal_rows(signal_rows)
     by_action = _signals_by_action(normalised)
@@ -681,7 +889,22 @@ def format_signals_list(
         1 for r in normalised if size_hits_w_max(r.get("size"), w_max)
     )
 
-    total_pages = signals_total_pages(signal_rows)
+    filt = str(action_filter or "").upper() or None
+    if filt and filt not in ("BUY", "WATCH", "SELL"):
+        filt = None
+
+    # Phân trang theo nhóm đang xem (hoặc max các nhóm khi full).
+    if filt:
+        n_group = len(by_action[filt])
+        size_map = {
+            "BUY": SIGNALS_PAGE_SIZE_NOTABLE,
+            "WATCH": SIGNALS_PAGE_SIZE_WATCH,
+            "SELL": SIGNALS_PAGE_SIZE_SELL,
+        }
+        page_size = size_map[filt]
+        total_pages = max(1, (n_group + page_size - 1) // page_size) if n_group else 1
+    else:
+        total_pages = signals_total_pages(signal_rows)
     use_page = page is not None
     page_i = 0
     if use_page:
@@ -689,7 +912,6 @@ def format_signals_list(
 
     lines = [
         f"📋 Tín hiệu phiên gần nhất{f' · {day}' if day else ''}",
-        # E-1: kết luận trước, rồi chi tiết danh sách.
         (
             f"Kết luận: phiên này có {n_buy} mã đáng chú ý, "
             f"{n_watch} đang theo dõi, {n_sell} nên tránh mua mới."
@@ -700,9 +922,8 @@ def format_signals_list(
     if use_page and total_pages > 1:
         lines.append(f"Trang {page_i + 1}/{total_pages} (tối đa 10 mã/nhóm).")
         lines.append("")
-    if p_shared is not None:
+    if p_shared is not None and not filt:
         pct = f"{float(p_shared) * 100:.0f}%"
-        # D-3: một câu — nhãn động + mô tả, không tiền tố cứng «nghiêng tăng».
         lines.append(
             f"→ Vì sao khí hậu chung: "
             f"{regime_label_prefix(p_shared)} (~{pct}) — {translate_regime(p_shared)}"
@@ -713,21 +934,19 @@ def format_signals_list(
         f"Tỷ trọng gợi ý = theo biến động mục tiêu, trần "
         f"{float(w_max) * 100:.0f}%/mã — không chia đều."
     )
-    if n_at_cap:
+    if n_at_cap and not filt:
         lines.append(
             f"⚠ {n_at_cap} mã đang chạm trần "
             f"{float(w_max) * 100:.0f}%/mã."
         )
     lines.append("")
 
-    # ban_phac §4: đáng chú ý → theo dõi → tránh mua mới; trong nhóm sort theo |score|.
-    order = ("BUY", "WATCH", "SELL")
+    order = ("BUY", "WATCH", "SELL") if not filt else (filt,)
     headers = {
         "BUY": "🟢 Tín hiệu đáng chú ý",
         "WATCH": "🟡 Theo dõi",
         "SELL": "🔴 Tránh mua mới",
     }
-    # E-3: badge đứng trước tên mã (không chỉ ở heading nhóm).
     badges = {"BUY": "🟢", "WATCH": "🟡", "SELL": "🔴"}
     page_sizes = {
         "BUY": SIGNALS_PAGE_SIZE_NOTABLE,
@@ -737,6 +956,14 @@ def format_signals_list(
 
     for act in order:
         rows = by_action[act]
+        if act == "BUY" and n_buy == 0:
+            lines.append(f"── {headers[act]} (0) ──")
+            lines.append(
+                "• Chưa có mã đạt đủ điều kiện mua — thị trường đang trong "
+                "giai đoạn thận trọng theo mô hình (chưa đủ điều kiện «đáng chú ý»)."
+            )
+            lines.append("")
+            continue
         if not rows:
             continue
         if use_page:
@@ -750,17 +977,24 @@ def format_signals_list(
         for row in rows:
             size_txt = format_size_with_cap(row.get("size"), w_max=w_max)
             ticker = row.get("ticker")
+            score = row.get("score")
+            try:
+                sc = float(score) if score is not None else None
+            except (TypeError, ValueError):
+                sc = None
+            score_icon = "🟢" if sc is not None and sc > 0 else (
+                "🔴" if sc is not None and sc < 0 else "🟡"
+            )
             lines.append(
-                f"• {badge} {ticker}  | điểm {_fmt_num(row.get('score'))}  "
+                f"• {badge} {ticker}  | {score_icon} điểm {_fmt_num(score)}  "
                 f"| biến động {_fmt_num(row.get('sigma_hat'), 4)}  "
                 f"| tỷ trọng {size_txt}"
             )
             lines.append(f"  → Chi tiết: /check {ticker}")
         lines.append("")
 
-    # Các action lạ (không BUY/WATCH/SELL) — chỉ khi không phân trang.
-    if not use_page:
-        known = set(order)
+    if not use_page and not filt:
+        known = set(("BUY", "WATCH", "SELL"))
         for row in normalised:
             act = str(row.get("action") or "?").upper()
             if act in known:
@@ -780,11 +1014,16 @@ def format_signals_list(
     return "\n".join(lines)
 
 
-def format_watchlist(rows: list[dict]) -> str:
+def format_watchlist(
+    rows: list[dict],
+    *,
+    view_filter: str | None = None,
+) -> str:
+    """/watchlist — tin đầu chỉ đếm; danh sách mã khi ``view_filter``=PASS|WATCH."""
     if not rows:
         return (
             "📭 Rổ lọc doanh nghiệp đang trống.\n\n"
-            "Cần chạy lọc theo quý (báo cáo tài chính) trước.\n\n"
+            "Cần chạy lần rà lọc doanh nghiệp (BCTC năm) trước.\n\n"
             + DISCLAIMER
         )
     as_of = rows[0].get("as_of_date", "")
@@ -794,28 +1033,49 @@ def format_watchlist(rows: list[dict]) -> str:
     watch_rows = [
         r for r in rows if str(r.get("fundamental_view", "")).upper() == "WATCH"
     ]
+    filt = str(view_filter or "").upper() or None
 
-    lines = [
-        "📌 Rổ lọc doanh nghiệp",
-        f"Theo BCTC năm (ước tính ngày công bố): {_fmt_day_vi(as_of)}",
-        "(Không phải quý lịch · không phải ngày giao dịch phiên — tín hiệu xem /signals.)",
-        "",
-    ]
-    if pass_rows:
-        lines.append(f"🟢 Đạt ({len(pass_rows)}) — đủ điều kiện vào rổ")
-        lines.append(" · ".join(str(r.get("ticker")) for r in pass_rows))
-        lines.append("")
-    if watch_rows:
-        lines.append(f"🟡 Theo dõi ({len(watch_rows)}) — cần xem thêm")
-        lines.append(" · ".join(str(r.get("ticker")) for r in watch_rows))
-        lines.append("")
-    lines.extend(
-        [
+    if filt == "PASS":
+        lines = [
+            f"📂 Danh sách ĐẠT — {len(pass_rows)} mã",
+            f"Theo BCTC năm (ước tính ngày công bố): {_fmt_day_vi(as_of)}",
+            "",
+            " · ".join(str(r.get("ticker")) for r in pass_rows) if pass_rows else "(trống)",
+            "",
             "Gõ /check <mã> để xem chi tiết từng mã.",
             "",
             DISCLAIMER,
         ]
-    )
+        return "\n".join(lines)
+    if filt == "WATCH":
+        lines = [
+            f"📂 Danh sách THEO DÕI — {len(watch_rows)} mã",
+            f"Theo BCTC năm (ước tính ngày công bố): {_fmt_day_vi(as_of)}",
+            "",
+            " · ".join(str(r.get("ticker")) for r in watch_rows) if watch_rows else "(trống)",
+            "",
+            "Gõ /check <mã> để xem chi tiết từng mã.",
+            "",
+            DISCLAIMER,
+        ]
+        return "\n".join(lines)
+
+    # Opener — mockup: chỉ đếm + ghi chú BCTC năm.
+    lines = [
+        "📂 Rổ lọc doanh nghiệp — theo BCTC năm gần nhất đã công bố (không phải theo quý)",
+        "",
+        f"🟢 {len(pass_rows)} mã ĐẠT — đủ điều kiện vào rổ giao dịch",
+        f"🟡 {len(watch_rows)} mã THEO DÕI — cần xem thêm trước khi vào rổ",
+        "",
+        "ⓘ \"BCTC năm\" nghĩa là hệ thống dùng báo cáo tài chính CẢ NĂM gần nhất, "
+        "không chấm theo từng quý.",
+        f"Ngày {_fmt_day_vi(as_of)} là ngày ước tính công ty công bố báo cáo đó, "
+        "không phải ngày giao dịch.",
+        "",
+        "Bấm nút bên dưới để xem danh sách mã.",
+        "",
+        DISCLAIMER,
+    ]
     return "\n".join(lines)
 
 
@@ -825,30 +1085,51 @@ def format_regime_message(
     *,
     prev_p_bull: float | None = None,
 ) -> str:
-    """/regime — E-1 kết luận trước; E-3 so sánh phiên trước nếu có lịch sử."""
-    header = f"🌤 Khí hậu thị trường{f' · {as_of}' if as_of else ''}"
+    """/regime — mockup: 1 dòng khí hậu (không lặp Kết luận + %), vì sao + ảnh hưởng."""
+    day = _fmt_day_vi(as_of) if as_of else ""
+    header = f"🌡 Khí hậu thị trường{f' — {day}' if day else ''}"
     if p_bull is None:
-        body = (
-            "Kết luận: chưa có dữ liệu phiên gần nhất.\n"
-            "→ Vì sao: store chưa có p_regime sau daily.\n"
-            "Thử lại sau khi hệ thống chạy xong phiên (thường sau 15:00)."
-        )
+        body_parts = [
+            "Kết luận: chưa có dữ liệu phiên gần nhất.",
+            "→ Vì sao: store chưa có p_regime sau daily.",
+            "Thử lại sau khi hệ thống chạy xong phiên (thường sau 15:00).",
+        ]
+        as_of_line = format_as_of_session_line(as_of)
+        if as_of_line:
+            body_parts.insert(0, as_of_line)
+        body = "\n".join(body_parts)
     else:
-        pct = f"{float(p_bull) * 100:.0f}%"
-        # D-3: một dòng khí hậu — khớp /signals.
+        light = regime_traffic_light(p_bull)
+        score = float(p_bull) * 100.0
         body_parts = [
             (
-                f"Kết luận: {regime_label_prefix(p_bull)} (~{pct}) — "
-                f"{translate_regime(p_bull)}"
+                f"{light} {regime_label_prefix(p_bull).capitalize()} "
+                f"(mô hình tin khá chắc, điểm {score:.0f}/100)"
+                if float(p_bull) < 0.45 or float(p_bull) >= 0.70
+                else (
+                    f"{light} {regime_label_prefix(p_bull).capitalize()} "
+                    f"(điểm {score:.0f}/100)"
+                )
             ),
-            "",
-            "→ Vì sao: đây là mức chung cả rổ (thường theo VNINDEX), "
-            "không riêng từng mã.",
         ]
         cmp_line = regime_session_compare(p_bull, prev_p_bull)
         if cmp_line:
-            body_parts.extend(["", cmp_line])
-        body_parts.extend(["", "Tiếp: /signals để xem gợi ý theo mã."])
+            # Mockup: «So với hôm qua: không đổi.»
+            body_parts.append(cmp_line.replace("So với phiên trước", "So với hôm qua"))
+        else:
+            body_parts.append("So với hôm qua: —")
+        body_parts.extend(
+            [
+                "",
+                f"→ Vì sao: {translate_regime(p_bull)}",
+                (
+                    "→ Ảnh hưởng: hệ thống hạn chế đề xuất mua mới cho đến khi "
+                    "tín hiệu đổi chiều."
+                    if float(p_bull) < 0.55
+                    else "→ Ảnh hưởng: hệ thống có thể đề xuất mua mới khi đủ điều kiện mã."
+                ),
+            ]
+        )
         body = "\n".join(body_parts)
     return f"{header}\n\n{body}\n\n{DISCLAIMER}"
 
@@ -955,11 +1236,18 @@ def format_signal_message(
     lines = [
         f"📌 {title}",
         f"Phiên giao dịch: {_fmt_day_vi(str(day)) if day else '—'}",
-        "",
-        f"Kết luận: {story}",
-        action_banner,
-        translate_action(action),
     ]
+    as_of_line = format_as_of_session_line(str(day)[:10] if day else None)
+    if as_of_line:
+        lines.append(as_of_line)
+    lines.extend(
+        [
+            "",
+            f"Kết luận: {story}",
+            action_banner,
+            translate_action(action),
+        ]
+    )
     if watch_capped:
         lines.append(
             "(Fundamental đang WATCH — không nâng thành MUA chính thức.)"
@@ -967,16 +1255,41 @@ def format_signal_message(
     if str(view_raw).upper() == "WATCH":
         lines.append("Quant/Risk chỉ mang tính tham khảo cho mã WATCH.")
     lines.append("")
-    lines.append("→ Vì sao (tóm tắt):")
-    lines.append(f"  • Doanh nghiệp: {translate_fundamental_view(view_raw)}")
-    lines.append(f"  • Thị trường: {p_line.replace('Khí hậu: ', '')}")
+    lines.append("→ Vì sao:")
+    view_u = str(view_raw).upper()
+    if view_u == "PASS":
+        fund_icon, fund_txt = "🟢", translate_fundamental_view(view_raw)
+    elif view_u == "WATCH":
+        fund_icon, fund_txt = "🟡", translate_fundamental_view(view_raw)
+    elif view_u == "FAIL":
+        fund_icon, fund_txt = "🔴", translate_fundamental_view(view_raw)
+    else:
+        fund_icon, fund_txt = "⚪", translate_fundamental_view(view_raw)
+    lines.append(f"  {fund_icon} Doanh nghiệp: {fund_txt}")
+    if p_regime is not None:
+        try:
+            reg_icon = regime_traffic_light(float(p_regime))
+            lines.append(
+                f"  {reg_icon} Thị trường chung: {regime_label_prefix(p_regime)}, "
+                f"{translate_regime(p_regime)}"
+            )
+        except (TypeError, ValueError):
+            lines.append(f"  ⚪ Thị trường: {p_line}")
+    else:
+        lines.append("  ⚪ Thị trường chung: chưa có dữ liệu")
     slope = reason.get("slope_tstat")
-    lines.append(
-        f"  • Xu hướng mã: {translate_kalman_trend(slope)} "
-        f"(so với nhiễu ngắn hạn; |t-stat|≥2 ≈ đủ rõ)"
-    )
+    trend_plain = translate_kalman_trend(slope)
+    try:
+        abs_t = abs(float(slope)) if slope is not None else None
+    except (TypeError, ValueError):
+        abs_t = None
+    if abs_t is not None and abs_t >= 2:
+        trend_icon = "🟢" if float(slope) > 0 else "🔴"
+    else:
+        trend_icon = "⚪"
+    lines.append(f"  {trend_icon} Xu hướng riêng mã: {trend_plain}")
     lines.append("")
-    lines.append("── Chi tiết ──")
+    lines.append(DETAIL_MARKER)
 
     gap = _data_gap_note(reason)
     if gap:
@@ -1008,7 +1321,7 @@ def format_signal_message(
             f"{_pillar_score_scale_note()}"
         )
         lines.append(
-            "Ghi chú: chưa có chỉ số gốc mục 6.1 trong store — chạy lại lọc quý để cập nhật."
+            "Ghi chú: chưa có chỉ số gốc mục 6.1 trong store — chạy lại lần rà lọc doanh nghiệp để cập nhật."
         )
 
     lines.extend(
@@ -1089,6 +1402,17 @@ def _check_header(ticker: str, meta: Mapping[str, Any] | None) -> list[str]:
     last_close = meta.get("last_close")
     if last_close is not None:
         lines.append(f"Giá gần nhất: {_fmt_num(last_close)}")
+    # Round2: timestamp đồng bộ /check — ưu tiên as_of / signal_date / price_date.
+    as_of = (
+        meta.get("as_of")
+        or meta.get("signal_date")
+        or meta.get("price_date")
+    )
+    as_of_line = format_as_of_session_line(
+        str(as_of)[:10] if as_of else None
+    )
+    if as_of_line:
+        lines.append(as_of_line)
     return lines
 
 
@@ -1605,7 +1929,7 @@ def format_check_unavailable(
     if not has_fundamental and not in_watchlist:
         lines.append(
             f"• {t} chưa có điểm cơ bản trong store "
-            "(chưa chạy / chưa vào lần lọc quý gần nhất)."
+            "(chưa chạy / chưa vào lần rà lọc doanh nghiệp gần nhất)."
         )
     elif has_fundamental and not in_watchlist:
         lines.append(
@@ -1633,11 +1957,19 @@ def format_positions(
     *,
     w_max: float = 0.10,
     last_closes: Mapping[str, float] | None = None,
+    as_of: str | None = None,
+    detail: bool = False,
 ) -> str:
-    """Bảng text cho /positions — E-3 thêm dòng tổng P/L danh mục ở đầu."""
+    """Bảng /positions — opener: icon P/L + giữ N phiên; giá vào/cắt lỗ chỉ khi detail."""
+    paper_disclaimer = (
+        "ⓘ Vị thế giấy = bot mô phỏng mở khi có tín hiệu MUA, giữ đến khi có tín hiệu "
+        "BÁN rõ ràng cho đúng mã đó — KHÔNG tự động cắt lỗ theo giá; mức cắt lỗ "
+        "chỉ để bạn tham khảo."
+    )
     if not rows:
         return (
             "📭 Chưa có vị thế giấy đang mở.\n\n"
+            f"{paper_disclaimer}\n\n"
             "Kết luận: chưa có mã nào đang nắm trên sổ giấy.\n"
             "→ Hệ thống mở vị thế giấy khi phiên có khuyến nghị MUA.\n"
             "Tỷ trọng mỗi mã = theo biến động mục tiêu (không chia đều).\n"
@@ -1648,67 +1980,21 @@ def format_positions(
     total = 0.0
     n_sized = 0
     n_at_cap = 0
-    # Tổng P/L danh mục ≈ trung bình trọng số theo size (chưa thực hiện).
     pnl_weight_sum = 0.0
     size_weight_sum = 0.0
+    computed: list[dict[str, Any]] = []
     for row in rows:
         size = row.get("size_pct_nav")
-        if size is None:
-            continue
+        s_f: float | None
         try:
-            s = float(size)
+            s_f = float(size) if size is not None else None
         except (TypeError, ValueError):
-            continue
-        total += s
-        n_sized += 1
-        if size_hits_w_max(s, w_max):
-            n_at_cap += 1
-        ticker = str(row.get("ticker") or "").upper()
-        entry = row.get("entry_price")
-        last = closes.get(ticker)
-        if last is None and row.get("last_close") is not None:
-            try:
-                last = float(row["last_close"])
-            except (TypeError, ValueError):
-                last = None
-        if entry is not None and last is not None:
-            try:
-                e = float(entry)
-                if e:
-                    pnl_i = float(last) / e - 1.0
-                    pnl_weight_sum += pnl_i * s
-                    size_weight_sum += s
-            except (TypeError, ValueError):
-                pass
-
-    portfolio_pnl = (
-        pnl_weight_sum / size_weight_sum if size_weight_sum > 0 else None
-    )
-
-    lines = [
-        "📦 Vị thế giấy đang mở",
-        (
-            f"Kết luận: đang mở {len(rows)} mã"
-            + (
-                f" — tổng P/L ước tính (chưa chốt): {_fmt_pct(portfolio_pnl, 1)}"
-                if portfolio_pnl is not None
-                else " — chưa đủ giá để ước tổng P/L"
-            )
-            + "."
-        ),
-        f"∑ tỷ trọng ≈ {_fmt_pct(total, 1) if n_sized else '—'}  ·  "
-        f"trần {float(w_max) * 100:.0f}%/mã",
-        "",
-    ]
-    if n_at_cap:
-        lines.append(
-            f"⚠ {n_at_cap} mã đang chạm trần "
-            f"{float(w_max) * 100:.0f}%/mã — không phải lỗi chia đều."
-        )
-        lines.append("")
-    for row in rows:
-        size = row.get("size_pct_nav")
-        size_txt = format_size_with_cap(size, w_max=w_max)
+            s_f = None
+        if s_f is not None:
+            total += s_f
+            n_sized += 1
+            if size_hits_w_max(s_f, w_max):
+                n_at_cap += 1
         ticker = str(row.get("ticker") or "").upper()
         entry = row.get("entry_price")
         last = closes.get(ticker)
@@ -1723,27 +2009,101 @@ def format_positions(
                 e = float(entry)
                 if e:
                     pnl_one = float(last) / e - 1.0
+                    if s_f is not None:
+                        pnl_weight_sum += pnl_one * s_f
+                        size_weight_sum += s_f
             except (TypeError, ValueError):
                 pnl_one = None
+        hold_n = holding_sessions_from_opened_at(row.get("opened_at"), as_of)
+        computed.append(
+            {
+                "row": row,
+                "ticker": ticker or str(row.get("ticker") or ""),
+                "entry": entry,
+                "stop": row.get("stop_price"),
+                "size_txt": format_size_with_cap(size, w_max=w_max),
+                "pnl": pnl_one,
+                "hold_n": hold_n,
+            }
+        )
+
+    portfolio_pnl = (
+        pnl_weight_sum / size_weight_sum if size_weight_sum > 0 else None
+    )
+    pnl_icon = _pnl_traffic_icon(portfolio_pnl)
+
+    if detail:
+        lines = [
+            f"▾ Chi tiết vị thế giấy — {len(rows)} mã",
+            paper_disclaimer,
+        ]
+    else:
+        lines = [
+            (
+                f"💼 Vị thế giấy đang mở — {len(rows)} mã"
+                + (
+                    f" · tổng P/L ước tính: {pnl_icon} {_fmt_pct(portfolio_pnl, 1)}"
+                    if portfolio_pnl is not None
+                    else " · chưa đủ giá để ước tổng P/L"
+                )
+            ),
+            "",
+            paper_disclaimer,
+        ]
+    as_of_line = format_as_of_session_line(as_of)
+    if as_of_line:
+        lines.append(as_of_line)
+    lines.append("")
+    if n_at_cap:
+        lines.append(
+            f"⚠ {n_at_cap} mã đang chạm trần "
+            f"{float(w_max) * 100:.0f}%/mã — không phải lỗi chia đều."
+        )
+        lines.append("")
+
+    for item in computed:
+        icon = _pnl_traffic_icon(item["pnl"])
+        hold_txt = (
+            f"giữ {item['hold_n']} phiên"
+            if item["hold_n"] is not None
+            else "giữ — phiên"
+        )
+        pnl_txt = _fmt_pct(item["pnl"], 1) if item["pnl"] is not None else "—"
+        if detail:
+            lines.extend(
+                [
+                    f"{icon} {item['ticker']}   {pnl_txt}  · {hold_txt} · "
+                    f"tỷ trọng {item['size_txt']}",
+                    f"  Giá vào: {_fmt_num(item['entry'])}  ·  "
+                    f"Cắt lỗ (tham khảo): {_fmt_num(item['stop'])}",
+                    f"  Mở: {_fmt_day_vi(item['row'].get('opened_at'))}",
+                    "",
+                ]
+            )
+        else:
+            lines.append(
+                f"{icon} {item['ticker']}   {pnl_txt}  · {hold_txt} · "
+                f"tỷ trọng {item['size_txt']}"
+            )
+
+    if not detail:
         lines.extend(
             [
-                f"• {row.get('ticker')}",
-                f"  Giá vào: {_fmt_num(entry)}  ·  "
-                f"Cắt lỗ: {_fmt_num(row.get('stop_price'))}",
-                f"  Tỷ trọng: {size_txt}  ·  Mở ngày: "
-                f"{_fmt_day_vi(row.get('opened_at'))}",
+                "",
+                "Chi tiết giá vào & cắt lỗ: bấm ▾ Xem chi tiết từng mã.",
+                "So sánh gợi ý: /signals · /check <mã>",
+                "",
+                DISCLAIMER,
             ]
         )
-        if pnl_one is not None:
-            lines.append(f"  P/L ước tính: {_fmt_pct(pnl_one, 1)}")
-        lines.append("")
-    lines.extend(
-        [
-            "Chi tiết: /check <mã>  ·  So sánh gợi ý: /signals",
-            "",
-            DISCLAIMER,
-        ]
-    )
+    else:
+        lines.extend(
+            [
+                "So sánh gợi ý: /signals · /check <mã>",
+                "",
+                DISCLAIMER,
+            ]
+        )
     return "\n".join(lines)
 
 
@@ -1824,19 +2184,20 @@ def format_backtest_results(
     if s_fw is not None and s_b0 is not None:
         if s_fw < s_b0:
             opener = (
-                f"Kết luận: trên dữ liệu kiểm thử ngoài mẫu, chiến lược hệ thống "
-                f"thấp hơn mua & giữ trên thước Sharpe "
-                f"({_fmt_num(s_fw)} so với {_fmt_num(s_b0)})."
+                f"🔴 Trên dữ liệu kiểm thử, chiến lược hệ thống "
+                f"(Sharpe {_fmt_num(s_fw)}) đang thấp hơn nhiều so với chỉ mua "
+                f"& giữ đơn giản (Sharpe {_fmt_num(s_b0)}) — đây là phát hiện hợp lệ, "
+                "không phải lỗi hiển thị."
             )
         elif s_fw > s_b0:
             opener = (
-                f"Kết luận: trên dữ liệu kiểm thử ngoài mẫu, chiến lược hệ thống "
-                f"cao hơn mua & giữ trên thước Sharpe "
-                f"({_fmt_num(s_fw)} so với {_fmt_num(s_b0)})."
+                f"🟢 Trên dữ liệu kiểm thử, chiến lược hệ thống "
+                f"(Sharpe {_fmt_num(s_fw)}) cao hơn mua & giữ "
+                f"(Sharpe {_fmt_num(s_b0)})."
             )
         else:
             opener = (
-                f"Kết luận: trên dữ liệu ngoài mẫu, Sharpe khung ≈ mua & giữ "
+                f"🟡 Trên dữ liệu ngoài mẫu, Sharpe khung ≈ mua & giữ "
                 f"({_fmt_num(s_fw)})."
             )
     else:
@@ -1846,9 +2207,14 @@ def format_backtest_results(
         )
 
     lines = [
-        "📊 Báo cáo kiểm thử chiến lược (nghiên cứu ngoài mẫu)",
+        "📈 Kết quả kiểm thử chiến lược (ngoài mẫu — không phải lãi/lỗ thật)",
+        "",
         opener,
-        "⚠️ Không cam kết lợi nhuận; chỉ đọc store, không tính lại khi gõ lệnh.",
+        "",
+        # Round2 Phần 3.1: B0 n_trades=0 vẫn có Sharpe — đúng bản chất equity daily.
+        "→ B0 (mua & giữ) không có «lệnh» nào sau lần mua đầu, nên Sharpe/CAGR của B0 "
+        "vẫn tính được từ biến động giá trị danh mục hàng ngày, không phụ thuộc số lệnh "
+        "— không phải bịa số liệu.",
         f"Phạm vi: {scope} · mã chạy: {run_id} · ghi ngày {_fmt_day_vi(run_at)}",
         "",
         "── Chi tiết so sánh ──",
@@ -1972,18 +2338,67 @@ def format_backtest_results(
     return "\n".join(lines)
 
 
+def unknown_share_from_sector_rows(rows: list[dict]) -> float | None:
+    """Tỷ lệ mã thuộc ngành UNKNOWN trên tổng ``n_total`` của overview /sector.
+
+    ``None`` khi không có dòng / tổng = 0.
+    """
+    if not rows:
+        return None
+    total = 0
+    unknown = 0
+    for row in rows:
+        n = int(row.get("n_total") or 0)
+        total += n
+        if str(row.get("industry") or "").strip().upper() == "UNKNOWN":
+            unknown += n
+    if total <= 0:
+        return None
+    return float(unknown) / float(total)
+
+
+def format_unknown_sector_warning(
+    share: float | None,
+    *,
+    threshold: float = 0.10,
+    n_unknown: int | None = None,
+) -> str | None:
+    """Cảnh báo khi tỷ lệ UNKNOWN > ngưỡng (mặc định 10%). Không bịa ngành."""
+    if share is None:
+        return None
+    if share <= threshold:
+        return None
+    pct = share * 100.0
+    if n_unknown is not None and n_unknown > 0:
+        head = (
+            f"⚠ Cảnh báo: dữ liệu ngành đang thiếu cho {int(n_unknown)} mã "
+            f"({pct:.0f}% > {threshold * 100:.0f}%)"
+        )
+    else:
+        head = (
+            f"⚠ Cảnh báo: {pct:.0f}% mã đang ở ngành UNKNOWN "
+            f"(>{threshold * 100:.0f}%)"
+        )
+    return (
+        f"{head} — xem /tinhtrangdulieu. "
+        "Chạy sector_job --universe-file data/universe/vn100.csv "
+        "để populate sector_mapping — không tự gán ngành trong bot."
+    )
+
+
 def format_sector_overview(
     rows: list[dict],
     as_of: str | None = None,
     *,
     has_sector_mapping: bool = True,
     has_watchlist: bool = True,
+    unknown_share: float | None = None,
 ) -> str:
     """Tổng quan /sector — top-down theo industry."""
     if not rows:
         reasons = []
         if not has_watchlist:
-            reasons.append("chưa có watchlist (chạy lọc quý)")
+            reasons.append("chưa có watchlist (chạy lần rà lọc doanh nghiệp)")
         if not has_sector_mapping:
             reasons.append("chưa có phân loại ngành (chạy sector_job)")
         if has_watchlist and has_sector_mapping:
@@ -2003,21 +2418,124 @@ def format_sector_overview(
         header,
         "Ngày trên = BCTC năm + lag công bố ước tính (không phải quý lịch),",
         "cũng không phải ngày giao dịch hôm nay.",
-        "Nếu cách hôm nay quá xa: cần chạy lại pipeline quý (BCTC năm mới) — không phải lỗi /sector.",
+        "Nếu cách hôm nay quá xa: cần chạy lại lần rà lọc doanh nghiệp "
+        "(BCTC năm mới) — không phải lỗi /sector.",
         "",
     ]
+    share = (
+        unknown_share
+        if unknown_share is not None
+        else unknown_share_from_sector_rows(rows)
+    )
+    n_unknown = None
+    if share is not None:
+        unk = 0
+        for row in rows:
+            if str(row.get("industry") or "").strip().upper() == "UNKNOWN":
+                unk += int(row.get("n_total") or 0)
+        n_unknown = unk
+    warn = format_unknown_sector_warning(share, n_unknown=n_unknown)
+    if warn:
+        lines.extend([warn, ""])
     for row in rows:
+        ind = str(row.get("industry") or "?").strip()
+        if ind.upper() == "UNKNOWN":
+            lines.append(
+                f"⚪ Chưa xác định ngành: {row.get('n_total', 0)} mã — "
+                "dữ liệu ngành đang được bổ sung, không phải lỗi hiển thị."
+            )
+            continue
+        n_pass = int(row.get("n_pass") or 0)
+        n_watch = int(row.get("n_watch") or 0)
+        n_fail = int(row.get("n_fail") or 0)
+        if n_pass > 0 and n_fail == 0:
+            icon = "🟢"
+        elif n_pass > 0:
+            icon = "🟡"
+        else:
+            icon = "⚪"
         lines.append(
-            f"• {row.get('industry', '?')}: "
-            f"đạt {row.get('n_pass', 0)} · "
-            f"theo dõi {row.get('n_watch', 0)} · "
-            f"loại {row.get('n_fail', 0)}"
+            f"{icon} {ind}: {n_pass} đạt · {n_watch} theo dõi"
+            + (f" · {n_fail} loại" if n_fail else "")
         )
     lines.extend(
         [
             "",
             "Đạt/Theo dõi = còn trong rổ · Loại = không vào rổ.",
-            "Tiếp: /watchlist · /check <mã> · /signals",
+            "Tiếp: /watchlist · /check <mã> · /signals · /tinhtrangdulieu",
+            "",
+            DISCLAIMER,
+        ]
+    )
+    return "\n".join(lines)
+
+
+def format_tinh_trang_du_lieu(
+    *,
+    latest_signal_date: str | None = None,
+    watchlist_n: int = 0,
+    open_positions_n: int = 0,
+    unknown_sector_share: float | None = None,
+    config_flags: dict[str, bool] | None = None,
+    include_config_flags: bool = False,
+) -> str:
+    """/tinhtrangdulieu — bảng EOD vs realtime (Round2 Phần 7); bot chỉ đọc store."""
+    lines = [
+        "📡 Tình trạng dữ liệu",
+        "",
+        "Kết luận: mọi lệnh Telegram chỉ đọc dữ liệu đã tính sẵn trong store — "
+        "không gọi realtime khi bạn chat.",
+        "",
+    ]
+    as_of_line = format_as_of_session_line(latest_signal_date)
+    if as_of_line:
+        lines.append(as_of_line)
+    else:
+        lines.append("Dữ liệu tính đến phiên: (chưa có tín hiệu trong store)")
+    lines.extend(
+        [
+            f"• Watchlist: {watchlist_n} mã  ·  Vị thế giấy mở: {open_positions_n}",
+            "",
+            "── EOD vs realtime (kiến trúc) ──",
+            "• EOD giá đóng cửa (OHLCV): chạy 1 lần/ngày sau 15:00 "
+            "(pipeline/daily_job) → ghi store.price_bars. "
+            "Bot không gọi provider giá khi bạn gõ lệnh.",
+            "• BCTC / Fundamental: rà lại định kỳ (~3 tháng/lần) xem có BCTC NĂM "
+            "mới chưa (pipeline/quarterly_job) → store.fundamental_scores. "
+            "Bot chỉ đọc điểm đã lưu.",
+            "• DNSE realtime API: chỉ khi job pipeline cần valuation tức thời "
+            "— không bao giờ từ bot/.",
+            "• Lệnh /check · /signals · /regime · /backtest · /positions · "
+            "/watchlist · /sector: 100% đọc store (EOD/đã lưu) — không realtime.",
+            "",
+        ]
+    )
+    warn = format_unknown_sector_warning(unknown_sector_share)
+    if warn:
+        lines.extend([warn, ""])
+    if include_config_flags and config_flags is not None:
+        lines.append("── Cờ mô hình (bật/tắt) ──")
+        flag_vi = {
+            "regime_markov": "Khí hậu thị trường",
+            "alpha_kalman_trend": "Xu hướng riêng mã",
+            "risk_garch": "Ước biến động / cắt lỗ",
+            "portfolio_black_litterman": "Tối ưu tỷ trọng nâng cao",
+            "probabilistic_monte_carlo": "Mô phỏng xác suất",
+            "probabilistic_hawkes": "Lọc đông đúc",
+            "safety_merton_dd": "An toàn tín dụng nâng cao",
+            "sector_overview_command": "Lệnh /sector",
+        }
+        for key, enabled in sorted(config_flags.items()):
+            label = flag_vi.get(key, key)
+            lines.append(f"  • {label}: {'BẬT' if enabled else 'tắt'}")
+        lines.append("")
+    lines.extend(
+        [
+            (
+                "Tiếp: /signals · /help · /tinhtrangdulieu"
+                if include_config_flags
+                else "Tiếp: /signals · /help · /status"
+            ),
             "",
             DISCLAIMER,
         ]
@@ -2031,51 +2549,27 @@ def format_status(
     latest_signal_date: str | None,
     watchlist_n: int,
     open_positions_n: int,
+    unknown_sector_share: float | None = None,
 ) -> str:
-    """/status — cờ config + timestamp store (không fit model)."""
-    lines = [
-        "⚙ Trạng thái hệ thống",
-        "",
-        (
-            f"• Tín hiệu mới nhất: {latest_signal_date}"
-            if latest_signal_date
-            else "• Tín hiệu mới nhất: (chưa có)"
-        ),
-        f"• Số mã trong watchlist: {watchlist_n}",
-        f"• Vị thế đang mở: {open_positions_n}",
-        "",
-        "Cờ mô hình (bật/tắt):",
-    ]
-    flag_vi = {
-        "regime_markov": "Khí hậu thị trường",
-        "alpha_kalman_trend": "Xu hướng riêng mã",
-        "risk_garch": "Ước biến động / cắt lỗ",
-        "portfolio_black_litterman": "Tối ưu tỷ trọng nâng cao",
-        "probabilistic_monte_carlo": "Mô phỏng xác suất",
-        "probabilistic_hawkes": "Lọc đông đúc",
-        "safety_merton_dd": "An toàn tín dụng nâng cao",
-        "sector_overview_command": "Lệnh /sector",
-    }
-    for key, enabled in sorted(config_flags.items()):
-        label = flag_vi.get(key, key)
-        lines.append(f"  • {label}: {'BẬT' if enabled else 'tắt'}")
-    lines.extend(
-        [
-            "",
-            "Tiếp: /signals · /help",
-            "",
-            DISCLAIMER,
-        ]
+    """/status — mirror /tinhtrangdulieu + cờ config (Round2 Phần 6)."""
+    # Mirror nội dung tình trạng dữ liệu; giữ cờ mô hình cho ops.
+    return format_tinh_trang_du_lieu(
+        latest_signal_date=latest_signal_date,
+        watchlist_n=watchlist_n,
+        open_positions_n=open_positions_n,
+        unknown_sector_share=unknown_sector_share,
+        config_flags=config_flags,
+        include_config_flags=True,
     )
-    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
 # Phần C — InlineKeyboard / ReplyKeyboard (chỉ điều hướng + đọc store)
 # ---------------------------------------------------------------------------
 
-# action ∈ {price, radar, ta, watch_add, pnl, detail}; callback chk:<action>:<TICKER>
-_CHECK_ACTIONS = frozenset({"price", "radar", "ta", "watch_add", "pnl", "detail"})
+# action ∈ {price, radar, ta, pnl, detail}; callback chk:<action>:<TICKER>
+# watch_add đã ẩn (Round 2) — không schema user_follows lần này.
+_CHECK_ACTIONS = frozenset({"price", "radar", "ta", "pnl", "detail"})
 
 
 def _telegram_keyboard_imports():
@@ -2125,7 +2619,7 @@ def check_keyboard_rows(
         CHECK_POSITION,
         CHECK_INSUFFICIENT,
     ):
-        _add("▾ Xem chi tiết", "detail")
+        _add("▾ Xem đầy đủ số liệu", "detail")
 
     if state == CHECK_POSITION:
         _add("📉 Xem P/L chi tiết", "pnl")
@@ -2148,7 +2642,6 @@ def check_keyboard_rows(
         _add("🎯 Radar Fundamental", "radar")
         if has_price_bars:
             _add("📈 TA tham khảo", "ta")
-        _add("⭐ Theo dõi mã này", "watch_add")
 
     if row:
         # Telegram: tối đa ~8 nút/hàng; tách 2 hàng nếu dài.
@@ -2179,34 +2672,151 @@ def build_check_keyboard(
     )
 
 
-def build_signals_keyboard(page: int, total_pages: int):
-    """Nút ◀ / Trang X/Y / ▶ — ``page:signals:<n>`` (0-based)."""
+def build_signals_opener_keyboard(
+    *,
+    n_buy: int,
+    n_watch: int,
+    n_sell: int,
+):
+    """Tin đầu /signals — nút mở từng nhóm + /regime (UX Redesign collapse)."""
     InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
-    if total_pages <= 1:
-        return None
-    page_i = max(0, min(int(page), total_pages - 1))
-    row = []
-    if page_i > 0:
+    row: list = []
+    if n_buy > 0:
         row.append(
             InlineKeyboardButton(
-                "◀ Trước",
-                callback_data=assert_callback_data_ok(f"page:signals:{page_i - 1}"),
+                f"▾ Xem {n_buy} mã đáng mua",
+                callback_data=assert_callback_data_ok("sig:BUY:0"),
             )
         )
+    if n_watch > 0:
+        row.append(
+            InlineKeyboardButton(
+                f"▾ Xem {n_watch} mã theo dõi",
+                callback_data=assert_callback_data_ok("sig:WATCH:0"),
+            )
+        )
+    if n_sell > 0:
+        row.append(
+            InlineKeyboardButton(
+                f"▾ Xem {n_sell} mã tránh mua",
+                callback_data=assert_callback_data_ok("sig:SELL:0"),
+            )
+        )
+    rows = []
+    # Telegram: tối đa ~3 nút/hàng cho dễ đọc.
+    if row:
+        if len(row) <= 2:
+            rows.append(row)
+        else:
+            rows.append(row[:2])
+            rows.append(row[2:])
+    rows.append(
+        [
+            InlineKeyboardButton(
+                "📊 /regime chi tiết",
+                callback_data=assert_callback_data_ok("nav:regime"),
+            )
+        ]
+    )
+    return InlineKeyboardMarkup(rows)
+
+
+def build_signals_keyboard(
+    page: int,
+    total_pages: int,
+    *,
+    action_filter: str | None = None,
+):
+    """Nút ◀ / Trang X/Y / ▶ — ``page:signals:<n>`` hoặc ``sig:<ACT>:<n>``."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    if total_pages <= 1:
+        # Vẫn cho nút quay lại opener khi đang xem 1 nhóm.
+        if action_filter:
+            return InlineKeyboardMarkup(
+                [
+                    [
+                        InlineKeyboardButton(
+                            "← Tóm tắt /signals",
+                            callback_data=assert_callback_data_ok("sig:summary"),
+                        )
+                    ]
+                ]
+            )
+        return None
+    page_i = max(0, min(int(page), total_pages - 1))
+    filt = str(action_filter or "").upper() or None
+    row = []
+    if page_i > 0:
+        if filt:
+            cb = assert_callback_data_ok(f"sig:{filt}:{page_i - 1}")
+        else:
+            cb = assert_callback_data_ok(f"page:signals:{page_i - 1}")
+        row.append(InlineKeyboardButton("◀ Trước", callback_data=cb))
     row.append(
         InlineKeyboardButton(
             f"Trang {page_i + 1}/{total_pages}",
-            callback_data=assert_callback_data_ok(f"page:signals:{page_i}"),
+            callback_data=assert_callback_data_ok(
+                f"sig:{filt}:{page_i}" if filt else f"page:signals:{page_i}"
+            ),
         )
     )
     if page_i < total_pages - 1:
+        if filt:
+            cb = assert_callback_data_ok(f"sig:{filt}:{page_i + 1}")
+        else:
+            cb = assert_callback_data_ok(f"page:signals:{page_i + 1}")
+        row.append(InlineKeyboardButton("Tiếp ▶", callback_data=cb))
+    rows = [row]
+    if filt:
+        rows.append(
+            [
+                InlineKeyboardButton(
+                    "← Tóm tắt /signals",
+                    callback_data=assert_callback_data_ok("sig:summary"),
+                )
+            ]
+        )
+    return InlineKeyboardMarkup(rows)
+
+
+def build_watchlist_keyboard(*, n_pass: int, n_watch: int):
+    """Nút ▾ Xem danh sách ĐẠT / THEO DÕI."""
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    row = []
+    if n_pass > 0:
         row.append(
             InlineKeyboardButton(
-                "Tiếp ▶",
-                callback_data=assert_callback_data_ok(f"page:signals:{page_i + 1}"),
+                "▾ Xem danh sách ĐẠT",
+                callback_data=assert_callback_data_ok("wl:PASS"),
             )
         )
+    if n_watch > 0:
+        row.append(
+            InlineKeyboardButton(
+                "▾ Xem danh sách THEO DÕI",
+                callback_data=assert_callback_data_ok("wl:WATCH"),
+            )
+        )
+    if not row:
+        return None
     return InlineKeyboardMarkup([row])
+
+
+def build_positions_keyboard(*, has_rows: bool):
+    """Nút ▾ Xem chi tiết từng mã (giá vào, cắt lỗ)."""
+    if not has_rows:
+        return None
+    InlineKeyboardButton, InlineKeyboardMarkup, _, _ = _telegram_keyboard_imports()
+    return InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "▾ Xem chi tiết từng mã (giá vào, cắt lỗ)",
+                    callback_data=assert_callback_data_ok("pos:detail"),
+                )
+            ]
+        ]
+    )
 
 
 def build_backtest_keyboard(run_id: str):
@@ -2235,7 +2845,7 @@ def build_regime_keyboard():
         [
             [
                 InlineKeyboardButton(
-                    "Xem theo từng mã →",
+                    "Xem /signals theo mã →",
                     callback_data=assert_callback_data_ok("nav:signals"),
                 )
             ]
@@ -2244,7 +2854,7 @@ def build_regime_keyboard():
 
 
 def build_start_reply_keyboard():
-    """ReplyKeyboard cố định cho /start — điền lệnh vào ô chat."""
+    """ReplyKeyboard cố định cho /start — gồm nút Tình trạng dữ liệu (Round2)."""
     _, _, KeyboardButton, ReplyKeyboardMarkup = _telegram_keyboard_imports()
     return ReplyKeyboardMarkup(
         [
@@ -2252,8 +2862,11 @@ def build_start_reply_keyboard():
                 KeyboardButton("/check"),
                 KeyboardButton("/signals"),
                 KeyboardButton("/regime"),
+            ],
+            [
                 KeyboardButton("/positions"),
-            ]
+                KeyboardButton("/tinhtrangdulieu"),
+            ],
         ],
         resize_keyboard=True,
         one_time_keyboard=False,
@@ -2293,12 +2906,12 @@ def format_watch_add_ack(ticker: str, *, on_system_watchlist: bool) -> str:
     t = ticker.strip().upper()
     if on_system_watchlist:
         body = (
-            f"✓ {t} đang trong rổ theo dõi hệ thống (sau lọc quý).\n"
+            f"✓ {t} đang trong rổ theo dõi hệ thống (sau lần rà lọc doanh nghiệp).\n"
             f"Xem: /watchlist · /check {t}"
         )
     else:
         body = (
-            f"ℹ {t} chưa có trong rổ lọc quý của hệ thống.\n"
+            f"ℹ {t} chưa có trong rổ lọc doanh nghiệp của hệ thống.\n"
             f"Bot không thêm mã vào pipeline khi bấm nút "
             "(chỉ đọc store).\n"
             f"Tiếp: /watchlist · /check {t} · /subscribe"

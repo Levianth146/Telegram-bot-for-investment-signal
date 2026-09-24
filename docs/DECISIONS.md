@@ -497,3 +497,96 @@ Ablation OOS (cùng bundle; layer Sharpe): B0 1.83 → fundamental 1.61 → regi
 **Phạm vi:** chỉ copy/layout formatter + nút `▾ Xem chi tiết` (`chk:detail:`) reuse Phần C. **Không** đổi `resolve_check_state`, ngưỡng, hay nhãn «Tín hiệu hệ thống».
 
 **Đã làm:** E-1 kết luận → vì sao → chi tiết trên `/check` (7 state); E-3 `/signals` badge + opener, `/regime` so sánh phiên trước nếu có lịch sử, `/backtest` câu mở đầu thường, `/start` rút gọn, `/help` nhóm nhu cầu, `/positions` tổng P/L; D-9 jargon (`w_max` → trần %/mã, MC off ngôn ngữ sản phẩm, dịch tên check, CVaR gloss, thang điểm 0–100).
+
+### Round2 P0-NEW — PIT fund / live BCTC / sector UNKNOWN (2026-09-24)
+
+Ba sửa dữ liệu/kiến trúc trước polish UX (BUG_REPORT_ROUND2):
+
+| ID | Quyết định | Chi tiết |
+|---|---|---|
+| **P0-NEW-1** | PIT trên `get_latest_fundamental_scores` | Thêm `as_of_date` (mặc định hôm nay); CTE `WHERE filed_at <= ?`. Callers daily_job truyền `signal_date` / watchlist as_of. Ops: `store/ops/hygiene_future_filed_at.py` xoá hàng `filed_at` > hôm nay (rác `--end-year` tương lai). |
+| **P0-NEW-2** | `build_scoring_frames_from_providers(mode=)` | `quarterly_job` `mode="live"`; ablation `mode="backtest"`. Không hardcode backtest trong hàm dùng chung. |
+| **P0-NEW-3** | Sector populate + cảnh báo | Chạy `sector_job` universe VN100; `/sector` + `/status` cảnh báo khi UNKNOWN > 10%; stub ghi chú `/tinhtrangdulieu`. Không bịa ngành trong formatter. |
+
+**Ngoài scope lần này:** GARCH refit-N, `user_follows`, auto-đóng vị thế WATCH/stop.
+
+### Round2 Phase 3 — `/positions` + Phần 6 polish + `/tinhtrangdulieu` (2026-09-24)
+
+Chỉ formatter/layout + lệnh mới; **không** đổi `sync_positions_from_signals` / stop execution / GARCH N / `user_follows`.
+
+| Mục | Quyết định |
+|---|---|
+| **`/positions`** | Disclaimer cố định (giữ đến SELL rõ; stop tham khảo); `giữ N phiên` từ `opened_at` (chênh ngày lịch); tổng P/L danh mục; dòng «Dữ liệu tính đến phiên …». |
+| **`/start` `/help`** | FinBot-style 3 nhánh + ví dụ cú pháp; `/help` nhóm nhu cầu + ví dụ mỗi lệnh; trỏ `/tinhtrangdulieu`. |
+| **`/signals` `/regime` `/watchlist` `/sector` `/backtest`** | 0-buy giải thích; đèn + điểm regime; ghi chú BCTC năm; UNKNOWN → `/tinhtrangdulieu`; B0 `n_trades=0` giải thích Sharpe equity daily. |
+| **`/tinhtrangdulieu`** | Lệnh mới — bảng EOD vs realtime (Phần 7); ReplyKeyboard thêm nút; `/status` mirror nội dung + cờ config. |
+| **Timestamps** | Đồng bộ «Dữ liệu tính đến phiên …» trên `/check` (meta.as_of) và `/positions`. |
+
+### Phần 8 Phase 1 — ProcessPool per-ticker (safe speed, 2026-09-24)
+
+**Phạm vi an toàn:** song song hot path Kalman/GARCH theo mã trong ``generate_signals``; **không** đổi ngưỡng / GARCH ``refit_every_n`` (Phase 2); **không** rewrite Kalman incremental hay P2-2.
+
+| Hạng mục | Quyết định |
+|---|---|
+| **Workers** | Config ``quant_engine.parallel_workers``: ``null`` = auto ``min(cpu, n_tickers)``; ``1`` = tuần tự; ``N>1`` = ``ProcessPoolExecutor``. Worker module-level ``_ticker_hotpath_worker`` (Windows spawn-safe). Pool **tái sử dụng** giữa các ngày tín hiệu (tránh spawn lại mỗi as_of). Merge deterministic sort theo ticker; ``kalman_cache`` / ``garch_cache`` chỉ cập nhật trên orchestrator. |
+| **Kalman / P2-2** | Giữ nguyên: ``kalman_cache`` key theo ticker; ablation/framework ``signal_tickers=None``. Smoke/parity tests xác nhận. |
+| **GARCH refit-N** | **Chưa** — stub vẫn V1; Phase 2. |
+
+**Profile smoke** (synthetic, ``--no-fundamentals``, 6 mã × 80 phiên, ``BACKTEST_PROFILE=1``, cùng phiên đo):
+
+| Mode | ``elapsed_sec`` | signal hotpath (regime+kalman+garch) |
+|---|---|---|
+| ``workers=1`` (tuần tự) | **7.48** | total **5.74s** — garch 5.30s (92%), kalman 0.41s, regime 0.04s |
+| ``workers=4`` (ProcessPool reused) | **4.07** | total **2.68s** — garch 2.07s (77%), kalman 0.58s, regime 0.04s (~1.8× nhanh hơn hotpath) |
+
+Lần đo cold trước đó (pool reuse vừa bật): seq **13.59s** / par **5.23s** (~2.6× elapsed). Artifact: ``outputs/performance/profile_phase1_seq.txt``, ``profile_phase1_par.txt``. Parity: ``test_parallel_signals`` — action/size/sigma tuần tự ≡ parallel.
+
+**Quyết định:** bật ``parallel_workers: null`` (auto) trong config; live nhỏ có thể set ``1`` nếu lo overhead. Không cook ngưỡng. Phase 2 mới làm GARCH ``refit_every_n`` thật + ablation N.
+
+### Phần 8 Phase 2 — GARCH ``refit_every_n`` thật + ablation chốt N (2026-09-24)
+
+**Implement:** bỏ stub luôn-``True`` trong ``should_refit_garch``. MLE mỗi N phiên tín hiệu; giữa các lần multi-step ``forecast_sigma(horizon=days_since_fit+1)`` từ model đã fit. Wire ``garch_state_cache`` theo ticker (model + ``days_since_fit`` + ``last_as_of``) qua ``signal_engine`` / ``backtest.engine`` (cùng pattern Kalman). **Không** làm rolling-window MLE (8.6).
+
+**Ablation OOS ngắn** (4 mã FPT,VNM,HPG,GAS; 2024-06-01→2026-09-24; ``signal_every=5``; no-fund; ``workers=1``). Artifact: ``store/ablation_garch_refit_n.json``, log ``outputs/performance/ablation_garch_refit_n.log``.
+
+| N | Sharpe | MDD | n_trades | elapsed_sec |
+|---|---|---|---|---|
+| 1 (null) | 0.7334 | −0.0257 | 17 | 162.4 |
+| 5 | 0.7334 | −0.0257 | 17 | 194.9 |
+| 21 | 0.7334 | −0.0257 | 17 | 210.2 |
+
+``|ΔSharpe(N5−N1)| = 0.00 ≤ 0.10`` (ngưỡng ``min_sharpe_improvement_oos`` dùng làm biên lệch chấp nhận). Trên cửa sổ này chuỗi lệnh/equity trùng N=1 (sizing không đổi); unit tests xác nhận MLE bị bỏ qua giữa các kỳ. Wall-clock cửa sổ thưa chưa nhanh hơn (forecast horizon + giữ model) — lợi tốc độ kỳ vọng khi ``signal_every`` dày / universe lớn.
+
+**Quyết định:** chốt ``risk_garch.refit_every_n: 5`` trong ``pipeline/config.yaml``. Không flip N=21; không làm 8.6.
+
+### Optional FINAL OOS VN100 — GARCH N=5 vs p22 (2026-09-24)
+
+Một lần FINAL sau khi chốt ``refit_every_n: 5`` (không gộp UX). Cùng protocol p22: VN100, ``--with-fundamentals``, ``signal_every=1``, OOS ``2025-03-22``→``2025-09-22``, warmup 3y, ``--no-walk-forward``. Artifact: ``store/backtest_final_vn100_20260924_n5.json`` (log ``store/backtest_final_vn100_20260924_n5.run.log``; ``EXIT_CODE=0``).
+
+| Metric (Framework OOS) | p22 watchlist | n5 (refit_every_n=5) | Δ |
+|---|---|---|---|
+| Total Return | **+2.15%** | **+1.96%** | −0.19 pp |
+| CAGR | **+4.42%** | **+4.03%** | −0.39 pp |
+| Sharpe | **0.52** | **0.48** | −0.04 |
+| Max Drawdown | −5.14% | −5.22% | ≈ |
+| n_trades | 101 | 101 | 0 |
+| Win rate | 49.50% | 48.51% | ≈ |
+| Avg exposure | **32.12%** | **31.96%** | ≈ |
+| Profit factor | 1.19 | 1.11 | ↓ |
+
+Ablation OOS (cùng bundle; layer Sharpe): B0 1.83 → fundamental 1.61 → regime n/a → alpha 0.85 (n=96) → risk **0.52** (n=100; p22 risk **0.52**/n=101); B1 2.74; B2 n/a. B0/B1 report Sharpe **không đổi** vs p22 (1.83 / 2.73).
+
+**Đối chiếu:** ``|ΔSharpe Framework| = 0.04 ≤ 0.10`` (biên lệch chấp nhận từ ablation N ngắn). Exposure/n_trades gần như giữ; Framework vẫn **thua B0/B1 và index**. Denser −0.84 và Phase 0/P2-2 log **giữ nguyên**. **Không** flip MC/BL; **không** cook ngưỡng; **không** đổi N=5.
+
+**Quyết định:** giữ ``risk_garch.refit_every_n: 5``. Artifact FINAL chính thức → ``store/backtest_final_vn100_20260924_n5.json`` (khớp config hiện tại).
+
+### UX Redesign triệt để — collapse + wording BCTC (2026-09-24)
+
+Chỉ display layer (`bot/formatters.py` + handlers `bot/main.py`); **không** đổi state machine / ngưỡng / công thức Quant.
+
+| Mục | Quyết định |
+|---|---|
+| **Disclaimer** | Một dòng cố định ``⚠ Học thuật · không phải tư vấn đầu tư.`` cuối mọi lệnh. |
+| **Wording BCTC** | Tần suất job: «rà lại định kỳ (~3 tháng/lần) xem có BCTC NĂM mới»; không dùng «lịch quý» khi nói tần suất. Loại báo cáo vẫn là BCTC năm. |
+| **Collapse** | `/check` tin đầu cắt trước ``── Chi tiết ──``; số thô (t-stat, EPS…) sau ``chk:detail``. `/signals` opener chỉ đếm + khí hậu; danh sách sau ``sig:BUY|WATCH|SELL``. `/watchlist` / `/positions` tương tự (``wl:*``, ``pos:detail``). |
+| **Artifact backtest** | FINAL chính thức: ``store/backtest_final_vn100_20260924_n5.json`` (sau OOS optional N=5; xem mục trên). p22 giữ làm baseline trước ``refit_every_n=5``. |

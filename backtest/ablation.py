@@ -585,6 +585,7 @@ def build_scoring_schedule(
             year,
             config=dict(config or {}),
             db_path=db_path,
+            mode="backtest",
         )
         elapsed = _time.perf_counter() - t0
         miss_secs.append(elapsed)

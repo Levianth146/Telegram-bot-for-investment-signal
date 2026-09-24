@@ -6,8 +6,11 @@ calls ``generate_signals``. Shared with ``backtest/`` (ARCHITECTURE invariant #2
 
 from __future__ import annotations
 
+import atexit
 import json
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from typing import Any, Mapping
 
 import numpy as np
@@ -41,6 +44,216 @@ def _perf_add(perf: dict[str, float] | None, key: str, dt: float) -> None:
     if perf is None:
         return
     perf[key] = float(perf.get(key, 0.0)) + float(dt)
+
+
+def _resolve_parallel_workers(
+    parallel_workers: Any, n_tickers: int
+) -> int:
+    """Số worker ProcessPool cho hot path per-ticker.
+
+    - ``null`` / thiếu: auto ``min(cpu_count, n_tickers)``
+    - ``1`` (hoặc ≤1): tuần tự — regression / live nhỏ
+    - ``N>1``: ``min(N, n_tickers)``
+    """
+    n = max(int(n_tickers), 0)
+    if n <= 1:
+        return 1
+    if parallel_workers is None:
+        cpu = int(os.cpu_count() or 1)
+        return max(1, min(cpu, n))
+    try:
+        requested = int(parallel_workers)
+    except (TypeError, ValueError):
+        cpu = int(os.cpu_count() or 1)
+        return max(1, min(cpu, n))
+    if requested <= 1:
+        return 1
+    return max(1, min(requested, n))
+
+
+def _days_since_fit_for_session(
+    garch_prev: Mapping[str, Any] | None,
+    *,
+    as_of_date: str,
+) -> tuple[int | None, Any]:
+    """Tính ``days_since_fit`` + previous_model cho phiên tín hiệu hiện tại.
+
+    Đếm theo phiên gọi ``generate_signals`` (không phải ngày lịch). Cùng
+    ``as_of`` → không tăng đếm (tránh double-bump nếu gọi lại trong ngày).
+    """
+    if not garch_prev:
+        return None, None
+    previous_model = garch_prev.get("model")
+    prev_days = garch_prev.get("days_since_fit")
+    last_as_of = str(garch_prev.get("last_as_of") or "")
+    if last_as_of == str(as_of_date):
+        if prev_days is None:
+            return None, previous_model
+        return int(prev_days), previous_model
+    if prev_days is None:
+        return None, previous_model
+    return int(prev_days) + 1, previous_model
+
+
+def _ticker_hotpath_worker(payload: dict[str, Any]) -> dict[str, Any]:
+    """Worker module-level — picklable trên Windows ``spawn``.
+
+    Nhận close + flags + kalman_init / garch_prev / cached_risk; trả alpha_pack
+    + risk + state Kalman/GARCH mới. Không đụng mutable cache cha.
+    """
+    ticker = str(payload["ticker"]).strip().upper()
+    close = pd.Series(
+        payload["close_values"],
+        index=payload["close_index"],
+        dtype=float,
+        name="close",
+    )
+    close = pd.to_numeric(close, errors="coerce").dropna()
+    if len(close) < 30:
+        return {
+            "ticker": ticker,
+            "skip": True,
+            "n": int(len(close)),
+            "kalman_sec": 0.0,
+            "garch_sec": 0.0,
+        }
+
+    fund = dict(payload.get("fund") or {})
+    kalman_enabled = bool(payload.get("kalman_enabled", True))
+    use_ou = bool(payload.get("use_ou", False))
+    garch_enabled = bool(payload.get("garch_enabled", True))
+    garch_refit_every_n = payload.get("garch_refit_every_n")
+    track_garch_state = (
+        garch_refit_every_n is not None and int(garch_refit_every_n) > 0
+    )
+    kalman_init = payload.get("kalman_init")
+    cached_risk = payload.get("cached_risk")
+    garch_prev = payload.get("garch_prev")
+    as_of_date = str(payload.get("as_of_date") or "")
+
+    # Cache cục bộ 1 key — tương đương truyền init_state, không share giữa workers.
+    # OU vẫn full-fit (không dùng init) nhưng vẫn ghi state cuối như path tuần tự.
+    local_kalman: dict[str, Any] | None = None
+    if kalman_enabled:
+        local_kalman = {}
+        if not use_ou and kalman_init is not None:
+            local_kalman[ticker] = kalman_init
+
+    t_kal = time.perf_counter()
+    pack = _compute_alpha_pack(
+        close,
+        fund=fund,
+        kalman_enabled=kalman_enabled,
+        use_ou=use_ou,
+        ticker=ticker,
+        kalman_cache=local_kalman,
+    )
+    kalman_sec = time.perf_counter() - t_kal
+    kalman_state = (
+        local_kalman.get(ticker) if local_kalman is not None else None
+    )
+
+    t_garch = time.perf_counter()
+    returns = _log_returns(close)
+    n_returns = int(len(returns))
+    garch_state: dict[str, Any] | None = None
+    if cached_risk is not None:
+        risk = dict(cached_risk)
+        # Same-day memo: giữ state cũ (không bump days_since_fit).
+        if track_garch_state and garch_prev is not None:
+            garch_state = dict(garch_prev)
+    elif garch_enabled:
+        days_since_fit, previous_model = _days_since_fit_for_session(
+            garch_prev if track_garch_state else None,
+            as_of_date=as_of_date,
+        )
+        fitted = fit_or_fallback_sigma(
+            returns,
+            refit_every_n=garch_refit_every_n if track_garch_state else None,
+            days_since_fit=days_since_fit,
+            previous_model=previous_model if track_garch_state else None,
+        )
+        risk = {
+            "sigma_hat": fitted.get("sigma_hat"),
+            "method": fitted.get("method"),
+            "refit": fitted.get("refit"),
+            "days_since_fit": fitted.get("days_since_fit"),
+        }
+        if track_garch_state:
+            garch_state = {
+                "model": fitted.get("model"),
+                "days_since_fit": int(fitted.get("days_since_fit") or 0),
+                "last_as_of": as_of_date,
+            }
+    else:
+        risk = {
+            "sigma_hat": float(returns.iloc[-20:].std(ddof=1))
+            if len(returns) >= 2
+            else float("nan"),
+            "method": "disabled_rolling",
+        }
+    garch_sec = time.perf_counter() - t_garch
+
+    return {
+        "ticker": ticker,
+        "skip": False,
+        "alpha_pack": pack,
+        "risk": risk,
+        "kalman_state": kalman_state,
+        "garch_state": garch_state,
+        "n_returns": n_returns,
+        "kalman_sec": float(kalman_sec),
+        "garch_sec": float(garch_sec),
+    }
+
+
+# Pool tái sử dụng giữa các lần generate_signals (tránh spawn lại mỗi ngày trên Windows).
+_HOTPATH_POOL: ProcessPoolExecutor | None = None
+_HOTPATH_POOL_WORKERS: int | None = None
+
+
+def shutdown_hotpath_pool() -> None:
+    """Đóng ProcessPool hot path (atexit / test teardown)."""
+    global _HOTPATH_POOL, _HOTPATH_POOL_WORKERS
+    if _HOTPATH_POOL is not None:
+        _HOTPATH_POOL.shutdown(wait=True)
+        _HOTPATH_POOL = None
+        _HOTPATH_POOL_WORKERS = None
+
+
+atexit.register(shutdown_hotpath_pool)
+
+
+def _get_hotpath_pool(n_workers: int) -> ProcessPoolExecutor:
+    """Lấy/ tạo ProcessPool module-level (spawn-safe, không tạo mỗi ngày)."""
+    global _HOTPATH_POOL, _HOTPATH_POOL_WORKERS
+    if (
+        _HOTPATH_POOL is not None
+        and _HOTPATH_POOL_WORKERS == int(n_workers)
+    ):
+        return _HOTPATH_POOL
+    shutdown_hotpath_pool()
+    _HOTPATH_POOL = ProcessPoolExecutor(max_workers=int(n_workers))
+    _HOTPATH_POOL_WORKERS = int(n_workers)
+    return _HOTPATH_POOL
+
+
+def _run_ticker_hotpaths(
+    payloads: list[dict[str, Any]],
+    *,
+    n_workers: int,
+) -> list[dict[str, Any]]:
+    """Chạy hot path per-ticker; merge deterministic (sort theo ticker)."""
+    if not payloads:
+        return []
+    if n_workers <= 1 or len(payloads) <= 1:
+        results = [_ticker_hotpath_worker(p) for p in payloads]
+    else:
+        # Tái sử dụng pool — Windows spawn đắt nếu tạo mới mỗi as_of.
+        pool = _get_hotpath_pool(n_workers)
+        results = list(pool.map(_ticker_hotpath_worker, payloads))
+    results.sort(key=lambda r: str(r.get("ticker") or ""))
+    return results
 
 
 def _compute_alpha_pack(
@@ -195,6 +408,7 @@ def generate_signals(
     config: Mapping[str, Any] | None = None,
     regime_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
     garch_cache: dict[tuple[Any, ...], Mapping[str, Any]] | None = None,
+    garch_state_cache: dict[str, Any] | None = None,
     kalman_cache: dict[str, Any] | None = None,
     perf_timings: dict[str, float] | None = None,
 ) -> list[dict[str, Any]]:
@@ -219,11 +433,16 @@ def generate_signals(
     garch_cache:
         Optional same-day memo ``{(as_of, ticker, n_returns): risk_pack}`` — tránh
         fit GARCH trùng cùng as_of trong một run (không đổi daily→weekly).
+    garch_state_cache:
+        Optional memo theo ``ticker`` lưu model GARCH + ``days_since_fit``
+        (Phần 8.5 ``refit_every_n`` — roll-forward giữa các lần MLE).
     kalman_cache:
         Optional memo theo ``ticker`` lưu state Kalman cuối (P2-1 incremental).
     perf_timings:
         Optional dict cộng dồn giây cho ``regime`` / ``kalman`` / ``garch``
         (bật khi ``BACKTEST_PROFILE=1``).
+    config quant_engine.parallel_workers:
+        ``null`` = auto ``min(cpu, n_tickers)``; ``1`` = tuần tự; ``N>1`` ProcessPool.
     """
     if not close_by_ticker:
         return []
@@ -241,7 +460,7 @@ def generate_signals(
     ou_enabled = bool((qcfg.get("alpha_ou_meanreversion") or {}).get("enabled", True))
     garch_cfg = dict(qcfg.get("risk_garch") or {})
     garch_enabled = bool(garch_cfg.get("enabled", True))
-    # None = refit mỗi phiên (V1). N>0 chỉ stub/log — chưa đổi semantics.
+    # None/≤0 = refit mỗi phiên (V1 / N=1). N>0 = MLE mỗi N phiên + forecast roll-forward.
     _raw_refit_n = garch_cfg.get("refit_every_n", None)
     garch_refit_every_n: int | None
     try:
@@ -250,6 +469,9 @@ def generate_signals(
         )
     except (TypeError, ValueError):
         garch_refit_every_n = None
+    if garch_refit_every_n is not None and garch_refit_every_n <= 0:
+        garch_refit_every_n = None
+    track_garch_state = garch_refit_every_n is not None
     bl_cfg = dict(qcfg.get("portfolio_black_litterman") or {})
     bl_enabled = bool(bl_cfg.get("enabled", False))
     bl_tau = float(bl_cfg.get("tau", 0.05))
@@ -260,6 +482,8 @@ def generate_signals(
     mc_horizon = int(mc_cfg.get("horizon_days", 10))
     mc_tp = float(mc_cfg.get("tp_pct", 0.08))
     hawkes_enabled = bool((qcfg.get("probabilistic_hawkes") or {}).get("enabled", False))
+    # null = auto min(cpu, n_tickers); 1 = tuần tự (regression / live nhỏ).
+    parallel_workers_cfg = qcfg.get("parallel_workers", None)
 
     available = {str(t).strip().upper() for t in close_by_ticker}
     scores = {
@@ -307,27 +531,12 @@ def generate_signals(
 
     use_ou = ou_enabled and p_bull < bull_threshold and p_bull > bear_threshold
 
-    # Precompute alphas (needed for BL views; reused in emit loop)
+    # Hot path per-ticker (Kalman/OU + GARCH) — song song khi parallel_workers>1.
+    # Regime giữ tuần tự (shared). Cache mutable chỉ cập nhật trên orchestrator.
     alpha_packs: dict[str, dict[str, Any]] = {}
-    t_kal = time.perf_counter()
-    for ticker in tickers:
-        close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
-        if len(close) < 30:
-            continue
-        alpha_packs[ticker] = _compute_alpha_pack(
-            close,
-            fund=scores.get(ticker) or {},
-            kalman_enabled=kalman_enabled,
-            use_ou=use_ou,
-            ticker=ticker,
-            kalman_cache=kalman_cache,
-        )
-    _perf_add(perf_timings, "kalman", time.perf_counter() - t_kal)
-
-    # Precompute sigma (cần cho stop + sizing; inverse-vol chỉ trên tập BUY sau)
     sigma_by_ticker: dict[str, float] = {}
     risk_by_ticker: dict[str, dict[str, Any]] = {}
-    t_garch = time.perf_counter()
+    payloads: list[dict[str, Any]] = []
     for ticker in tickers:
         close = pd.to_numeric(close_by_ticker[ticker], errors="coerce").dropna()
         if len(close) < 30:
@@ -335,33 +544,91 @@ def generate_signals(
         returns = _log_returns(close)
         n_rets = int(len(returns))
         garch_key = (str(as_of_date), str(ticker), n_rets)
-        if garch_enabled:
-            if garch_cache is not None and garch_key in garch_cache:
-                risk = dict(garch_cache[garch_key])
-            else:
-                risk = fit_or_fallback_sigma(
-                    returns,
-                    refit_every_n=garch_refit_every_n,
-                    days_since_fit=None,
-                )
-                if garch_cache is not None:
-                    # Không cache object model nặng — chỉ sigma/method (same-day reuse).
-                    garch_cache[garch_key] = {
-                        "sigma_hat": risk.get("sigma_hat"),
-                        "method": risk.get("method"),
-                    }
-        else:
-            risk = {
-                "sigma_hat": float(returns.iloc[-20:].std(ddof=1))
-                if len(returns) >= 2
-                else float("nan"),
-                "method": "disabled_rolling",
+        cached_risk = None
+        if (
+            garch_enabled
+            and garch_cache is not None
+            and garch_key in garch_cache
+        ):
+            cached_risk = dict(garch_cache[garch_key])
+        kalman_init = None
+        if (
+            kalman_enabled
+            and not use_ou
+            and kalman_cache is not None
+            and ticker in kalman_cache
+        ):
+            kalman_init = kalman_cache[ticker]
+        garch_prev = None
+        if (
+            track_garch_state
+            and garch_state_cache is not None
+            and ticker in garch_state_cache
+        ):
+            garch_prev = garch_state_cache[ticker]
+        payloads.append(
+            {
+                "ticker": ticker,
+                "as_of_date": str(as_of_date),
+                "close_values": close.to_numpy(dtype=float),
+                "close_index": [str(x) for x in close.index.tolist()],
+                "fund": dict(scores.get(ticker) or {}),
+                "kalman_enabled": kalman_enabled,
+                "use_ou": use_ou,
+                "kalman_init": kalman_init,
+                "garch_enabled": garch_enabled,
+                "garch_refit_every_n": garch_refit_every_n,
+                "cached_risk": cached_risk,
+                "garch_prev": garch_prev,
             }
+        )
+
+    n_workers = _resolve_parallel_workers(parallel_workers_cfg, len(payloads))
+    t_hot = time.perf_counter()
+    hot_results = _run_ticker_hotpaths(payloads, n_workers=n_workers)
+    wall_hot = time.perf_counter() - t_hot
+    kalman_cpu = sum(float(r.get("kalman_sec") or 0.0) for r in hot_results)
+    garch_cpu = sum(float(r.get("garch_sec") or 0.0) for r in hot_results)
+    if n_workers <= 1:
+        # Tuần tự: CPU ≈ wall theo từng ticker.
+        _perf_add(perf_timings, "kalman", kalman_cpu)
+        _perf_add(perf_timings, "garch", garch_cpu)
+    else:
+        # Song song: ghi wall-clock phân bổ theo tỷ lệ CPU (không cộng thêm hotpath_wall).
+        cpu_sum = kalman_cpu + garch_cpu
+        if cpu_sum > 0:
+            _perf_add(perf_timings, "kalman", wall_hot * (kalman_cpu / cpu_sum))
+            _perf_add(perf_timings, "garch", wall_hot * (garch_cpu / cpu_sum))
+        else:
+            _perf_add(perf_timings, "garch", wall_hot)
+
+    for result in hot_results:
+        ticker = str(result["ticker"])
+        if result.get("skip"):
+            continue
+        pack = result["alpha_pack"]
+        risk = dict(result["risk"])
+        alpha_packs[ticker] = pack
         risk_by_ticker[ticker] = risk
+        if kalman_cache is not None and result.get("kalman_state") is not None:
+            kalman_cache[ticker] = result["kalman_state"]
+        if (
+            track_garch_state
+            and garch_state_cache is not None
+            and result.get("garch_state") is not None
+        ):
+            garch_state_cache[ticker] = result["garch_state"]
+        if garch_enabled and garch_cache is not None:
+            n_rets = int(result.get("n_returns") or 0)
+            garch_key = (str(as_of_date), str(ticker), n_rets)
+            if garch_key not in garch_cache:
+                garch_cache[garch_key] = {
+                    "sigma_hat": risk.get("sigma_hat"),
+                    "method": risk.get("method"),
+                }
         sigma_hat = risk.get("sigma_hat")
         if sigma_hat is not None and not pd.isna(sigma_hat) and float(sigma_hat) > 0:
             sigma_by_ticker[ticker] = float(sigma_hat)
-    _perf_add(perf_timings, "garch", time.perf_counter() - t_garch)
 
     hawkes_mult = 1.0
     if hawkes_enabled:

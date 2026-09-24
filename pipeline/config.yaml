@@ -79,9 +79,9 @@ quant_engine:
   risk_garch:
     enabled: true
     tier: P0
-    # P2-1 stub: null = refit mỗi phiên (V1). Đặt N (vd. 5/21) chỉ sau khi nhóm
-    # chốt + ghi DECISIONS — hiện hook chỉ log, chưa đổi semantics.
-    refit_every_n: null
+    # Phần 8.5: MLE mỗi N phiên tín hiệu + forecast roll-forward giữa các lần.
+    # Chốt N=5 sau ablation OOS ngắn 2026-09-24 (xem DECISIONS). null = N=1.
+    refit_every_n: 5
   portfolio_black_litterman:
     enabled: false
     tier: P1
@@ -103,6 +103,9 @@ quant_engine:
   bull_threshold: 0.55
   bear_threshold: 0.35
   min_slope_tstat: 1.0
+  # Phase 1 speed (an toàn): song song hot path per-ticker trong generate_signals.
+  # null = auto min(cpu, n_tickers); 1 = tuần tự (parity / live nhỏ); N>1 = ProcessPool.
+  parallel_workers: null
 
 backtest:
   start_date: "2019-01-01"

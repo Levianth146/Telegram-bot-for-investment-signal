@@ -4,14 +4,15 @@ Dùng series tổng hợp (không API) để đo hotspot sim: FF rescore, trunca
 
 Ví dụ::
 
-  python scripts/profile_backtest_smoke.py --out outputs/performance/profile_before.txt
-  python scripts/profile_backtest_smoke.py --out outputs/performance/profile_after.txt
+  python scripts/profile_backtest_smoke.py --workers 1 --out outputs/performance/profile_phase1_seq.txt
+  python scripts/profile_backtest_smoke.py --workers 4 --out outputs/performance/profile_phase1_par.txt
 """
 
 from __future__ import annotations
 
 import argparse
 import cProfile
+import os
 import pstats
 import sys
 import time
@@ -19,18 +20,17 @@ from io import StringIO
 from pathlib import Path
 
 
-def _synthetic_closes(n_tickers: int = 4, n_days: int = 80):
+def _synthetic_closes(n_tickers: int = 6, n_days: int = 80):
     import numpy as np
     import pandas as pd
 
     rng = np.random.default_rng(42)
     dates = pd.bdate_range("2024-01-02", periods=n_days).strftime("%Y-%m-%d").tolist()
     closes: dict[str, pd.Series] = {}
-    tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"][:n_tickers]
+    tickers = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF", "GGG", "HHH"][:n_tickers]
     for i, t in enumerate(tickers):
         walk = 100.0 + i * 5.0 + np.cumsum(rng.normal(0.05, 1.0, size=n_days))
         closes[t] = pd.Series(walk, index=dates, name="close")
-    # Benchmark cho regime
     walk_b = 1000.0 + np.cumsum(rng.normal(0.02, 0.8, size=n_days))
     closes["VNINDEX"] = pd.Series(walk_b, index=dates, name="close")
     return closes, tickers, dates
@@ -66,7 +66,7 @@ def _synthetic_schedule(tickers: list[str], dates: list[str]):
     return {mid: frames_a, late: frames_b}
 
 
-def _minimal_config() -> dict:
+def _minimal_config(*, parallel_workers: int | None = 1) -> dict:
     return {
         "quant_engine": {
             "benchmark": "VNINDEX",
@@ -76,6 +76,7 @@ def _minimal_config() -> dict:
             "bull_threshold": 0.55,
             "bear_threshold": 0.35,
             "min_slope_tstat": 1.0,
+            "parallel_workers": parallel_workers,
             "regime_markov": {"enabled": True},
             "alpha_kalman_trend": {"enabled": True},
             "alpha_ou_meanreversion": {"enabled": True},
@@ -94,14 +95,20 @@ def _minimal_config() -> dict:
     }
 
 
-def run_smoke(*, with_fundamentals: bool, signal_every: int) -> dict:
+def run_smoke(
+    *,
+    with_fundamentals: bool,
+    signal_every: int,
+    parallel_workers: int | None = 1,
+    n_tickers: int = 6,
+    n_days: int = 80,
+) -> dict:
     from backtest.engine import run_backtest
 
-    closes, tickers, dates = _synthetic_closes()
+    closes, tickers, dates = _synthetic_closes(n_tickers=n_tickers, n_days=n_days)
     schedule = _synthetic_schedule(tickers, dates) if with_fundamentals else None
-    cfg = _minimal_config()
+    cfg = _minimal_config(parallel_workers=parallel_workers)
 
-    # Monkeypatch score_current_universe nếu fund on — tránh phụ thuộc frames đầy đủ.
     if with_fundamentals:
         import pandas as pd
         import backtest.engine as eng
@@ -153,10 +160,20 @@ def main(argv: list[str] | None = None) -> int:
         help="Bỏ scoring_schedule (đo quant-only)",
     )
     parser.add_argument("--top", type=int, default=20)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="quant_engine.parallel_workers (1=tuần tự; >1 ProcessPool)",
+    )
+    parser.add_argument("--n-tickers", type=int, default=6)
+    parser.add_argument("--n-days", type=int, default=80)
     args = parser.parse_args(argv)
 
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    os.environ["BACKTEST_PROFILE"] = "1"
 
     profiler = cProfile.Profile()
     t0 = time.perf_counter()
@@ -164,19 +181,27 @@ def main(argv: list[str] | None = None) -> int:
     result = run_smoke(
         with_fundamentals=not args.no_fundamentals,
         signal_every=max(int(args.signal_every), 1),
+        parallel_workers=int(args.workers),
+        n_tickers=max(int(args.n_tickers), 1),
+        n_days=max(int(args.n_days), 40),
     )
     profiler.disable()
     elapsed = time.perf_counter() - t0
+    perf = result.get("perf_timings") or {}
 
     stream = StringIO()
     stats = pstats.Stats(profiler, stream=stream)
     stats.strip_dirs().sort_stats("cumtime")
-    print(f"=== BACKTEST SMOKE PROFILE ===", file=stream)
+    print("=== BACKTEST SMOKE PROFILE ===", file=stream)
     print(f"elapsed_sec={elapsed:.4f}", file=stream)
+    print(f"parallel_workers={args.workers}", file=stream)
+    print(f"n_tickers={args.n_tickers} n_days={args.n_days}", file=stream)
     print(f"n_trades={(result.get('metrics') or {}).get('n_trades')}", file=stream)
     print(f"equity_points={len(result.get('equity_curve') or [])}", file=stream)
     print(f"with_fundamentals={not args.no_fundamentals}", file=stream)
     print(f"signal_every={args.signal_every}", file=stream)
+    if perf:
+        print(f"perf_timings={perf}", file=stream)
     print("", file=stream)
     print(f"--- top {args.top} by cumtime ---", file=stream)
     stats.print_stats(args.top)

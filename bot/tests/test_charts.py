@@ -224,3 +224,85 @@ def test_equity_align_oos_window(tmp_path):
     )
     assert path.is_file()
     assert path.stat().st_size > 100
+
+
+def test_equity_baselines_filter_b0_only(tmp_path, monkeypatch):
+    """Phần 5: baselines=['framework','B0_buyhold'] chỉ plot 2 series đó."""
+    import json
+
+    import pytest
+
+    from bot.charts import ChartDataError, render_backtest_equity_curve_chart
+
+    db = tmp_path / "bot.db"
+    conn = repository.get_connection(str(db))
+    repository.init_schema(conn)
+    curve = [{"date": f"2024-02-{i:02d}", "equity": 1.0 + i * 0.01} for i in range(1, 12)]
+    common = {
+        "run_id": "filt1",
+        "run_at": "2024-06-01T00:00:00",
+        "scope": "portfolio",
+        "cagr": 0.1,
+        "sharpe": 0.5,
+        "max_drawdown": -0.1,
+        "win_rate": None,
+        "n_trades": 5,
+        "turnover": None,
+        "sortino": None,
+        "calmar": None,
+        "profit_factor": None,
+        "max_drawdown_days": None,
+        "margin_bps": None,
+        "cvar95_realized": None,
+        "cvar95_calibration_note": None,
+        "sharpe_bull_regime": None,
+        "sharpe_bear_regime": None,
+        "equity_curve_json": json.dumps(curve),
+    }
+    repository.upsert_backtest_results(
+        conn,
+        [
+            {**common, "baseline": "framework"},
+            {**common, "baseline": "B0_buyhold"},
+            {**common, "baseline": "B1_ta"},
+            {**common, "baseline": "B2_canslim"},
+        ],
+    )
+    conn.close()
+
+    plotted: list[str] = []
+    real_subplots = __import__("matplotlib.pyplot", fromlist=["plt"]).subplots
+
+    def _wrap_subplots(*a, **k):
+        fig, ax = real_subplots(*a, **k)
+        real_plot = ax.plot
+
+        def _plot(*pa, **pk):
+            if "label" in pk:
+                plotted.append(str(pk["label"]))
+            return real_plot(*pa, **pk)
+
+        ax.plot = _plot
+        return fig, ax
+
+    monkeypatch.setattr("bot.charts.plt.subplots", _wrap_subplots)
+
+    path = render_backtest_equity_curve_chart(
+        "portfolio",
+        "filt1",
+        tmp_path / "eq_b0.png",
+        db_path=str(db),
+        baselines=["framework", "B0_buyhold"],
+    )
+    assert path.is_file()
+    assert set(plotted) == {"framework", "B0_buyhold"}
+    assert "B1_ta" not in plotted and "B2_canslim" not in plotted
+
+    with pytest.raises(ChartDataError):
+        render_backtest_equity_curve_chart(
+            "portfolio",
+            "filt1",
+            tmp_path / "eq_none.png",
+            db_path=str(db),
+            baselines=["no_such_baseline"],
+        )

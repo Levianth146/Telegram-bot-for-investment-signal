@@ -256,8 +256,10 @@ def run_backtest(
     day_pos = {d: i for i, d in enumerate(calendar)}
     # Regime + GARCH same-day memo trong một run (không đổi daily→weekly).
     # Kalman memo theo ticker (P2-1 incremental — không key n_returns).
+    # GARCH state theo ticker: model + days_since_fit (Phần 8.5 refit_every_n).
     regime_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
     garch_memo: dict[tuple[str, str, int], dict[str, Any]] = {}
+    garch_state_memo: dict[str, Any] = {}
     kalman_memo: dict[str, Any] = {}
     # Profile hot path: BACKTEST_PROFILE=1 → cộng dồn giây regime/kalman/garch.
     _profile = str(os.environ.get("BACKTEST_PROFILE", "")).strip().lower() in {
@@ -459,6 +461,7 @@ def run_backtest(
                     signal_tickers=emit,
                     regime_cache=regime_memo,
                     garch_cache=garch_memo,
+                    garch_state_cache=garch_state_memo,
                     kalman_cache=kalman_memo,
                     perf_timings=perf_timings,
                 )

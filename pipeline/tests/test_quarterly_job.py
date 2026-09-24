@@ -113,15 +113,52 @@ def test_daily_job_dry_run(capsys, tmp_path):
     assert "watchlist size: 1" in out
 
 
-def test_daily_job_run_without_fetch(tmp_path):
-    db = tmp_path / "bot.db"
-    conn = repository.get_connection(str(db))
-    repository.init_schema(conn)
-    repository.upsert_watchlist(
-        conn,
-        [{"as_of_date": "2025-01-01", "ticker": "VNM", "fundamental_view": "PASS"}],
+def test_quarterly_job_fetch_live_uses_mode_live(monkeypatch, tmp_path):
+    """fetch_live=True phải gọi build_scoring_frames_from_providers(..., mode='live')."""
+    import pandas as pd
+
+    seen: dict = {}
+
+    def fake_build(
+        tickers,
+        start_year,
+        end_year,
+        config=None,
+        *,
+        db_path="store/bot.db",
+        mode="backtest",
+    ):
+        seen["mode"] = mode
+        seen["tickers"] = list(tickers)
+        return {}
+
+    monkeypatch.setattr(
+        quarterly_job, "build_scoring_frames_from_providers", fake_build
     )
-    conn.close()
-    result = daily_job.run({}, db_path=str(db), fetch_prices=False)
-    assert result["tickers"] == ["VNM"]
-    assert result["price_inputs"] is None
+    monkeypatch.setattr(
+        quarterly_job,
+        "score_current_universe",
+        lambda *a, **k: (pd.DataFrame(), {}, {}),
+    )
+    monkeypatch.setattr(
+        quarterly_job,
+        "to_store_records",
+        lambda *a, **k: {"fundamental_scores": [], "watchlist": []},
+    )
+    db = tmp_path / "bot.db"
+    result = quarterly_job.run(
+        {
+            "data_sources": {
+                "financial_statements_backtest": {"assumed_publication_lag_days": 90}
+            }
+        },
+        tickers=["AAA"],
+        start_year=2022,
+        end_year=2024,
+        db_path=str(db),
+        persist=False,
+        fetch_live=True,
+    )
+    assert seen.get("mode") == "live"
+    assert seen.get("tickers") == ["AAA"]
+    assert result["filed_at"] == "2025-03-31"

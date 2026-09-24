@@ -362,13 +362,20 @@ def render_backtest_equity_curve_chart(
     *,
     db_path: str = "store/bot.db",
     align_to_oos: bool = True,
+    baselines: list[str] | None = None,
 ) -> Path:
     """Equity curve framework + baselines từ backtest_results.
 
     Khi ``align_to_oos=True`` (mặc định): cắt mọi baseline về cùng cửa sổ ngày
     của framework (OOS) và rebase — tránh so IS+OS với chỉ OOS trên 1 chart.
+
+    ``baselines``: nếu truyền, chỉ vẽ các baseline trong danh sách (vd.
+    ``["framework", "B0_buyhold"]`` cho nút So B0). ``None`` = vẽ tất cả.
     """
     rows = _load_backtest_curves(scope, run_id, db_path=db_path)
+    if baselines is not None:
+        allow = {str(b) for b in baselines}
+        rows = [r for r in rows if str(r.get("baseline") or "") in allow]
     out = _ensure_out(out_path)
     fig, ax = plt.subplots(figsize=(9, 4.5))
     plotted = 0

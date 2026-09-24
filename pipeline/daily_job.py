@@ -66,7 +66,10 @@ def load_watchlist_tickers(
     try:
         repository.init_schema(conn)
         tickers = repository.get_watchlist(conn, as_of_date)
-        fund_by_ticker = repository.get_latest_fundamental_scores(conn, tickers or None)
+        # PIT: chỉ lấy BCTC đã "công bố" tới as_of (tránh hàng filed_at tương lai).
+        fund_by_ticker = repository.get_latest_fundamental_scores(
+            conn, tickers or None, as_of_date=as_of_date
+        )
     finally:
         conn.close()
 
@@ -395,7 +398,10 @@ def run(
     conn = repository.get_connection(db_path)
     try:
         repository.init_schema(conn)
-        fund_scores = repository.get_latest_fundamental_scores(conn, universe)
+        # PIT theo ngày tín hiệu — khớp generate_signals(as_of_date=signal_date).
+        fund_scores = repository.get_latest_fundamental_scores(
+            conn, universe, as_of_date=signal_date
+        )
     finally:
         conn.close()
 

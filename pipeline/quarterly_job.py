@@ -61,8 +61,14 @@ def run(
                 "or scoring_frames=..."
             )
         if fetch_live:
+            # Pipeline sống: BCTC mode=live (không dùng snapshot backtest).
             scoring_frames = build_scoring_frames_from_providers(
-                tickers, start_year, end_year, config=config, db_path=db_path
+                tickers,
+                start_year,
+                end_year,
+                config=config,
+                db_path=db_path,
+                mode="live",
             )
         else:
             raise NotImplementedError(

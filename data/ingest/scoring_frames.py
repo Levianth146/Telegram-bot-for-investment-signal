@@ -10,7 +10,7 @@ Historical valuation uses year-end closes + ``assumed_filed_at`` PIT observation
 
 from __future__ import annotations
 
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 import numpy as np
 import pandas as pd
@@ -519,10 +519,12 @@ def build_scoring_frames_from_providers(
     config: Mapping[str, Any] | None = None,
     *,
     db_path: str = "store/bot.db",
+    mode: Literal["live", "backtest"] = "backtest",
 ) -> dict[str, pd.DataFrame]:
     """Fetch annual BCTC (+ year-end price/shares/industry) via ``data.providers``.
 
-    Industry prefers ``store.sector_mapping`` (from ``sector_job``); live KBS fills gaps.
+    ``mode='live'`` → chuỗi BCTC sống (pipeline quý); ``mode='backtest'`` → nguồn
+    lịch sử walk-forward. Industry ưu tiên ``store.sector_mapping``; KBS bù lỗ.
     """
     from data.providers import (
         get_financial_statement_provider,
@@ -532,7 +534,8 @@ def build_scoring_frames_from_providers(
     )
 
     cfg = dict(config) if config is not None else load_pipeline_config()
-    fs = get_financial_statement_provider(cfg, mode="backtest")
+    # Không hardcode backtest — quarterly_job truyền live; ablation giữ backtest.
+    fs = get_financial_statement_provider(cfg, mode=mode)
     price_provider = get_price_provider(cfg)
     sector = get_sector_provider(cfg)
     ff = cfg.get("fundamental_filter") or {}

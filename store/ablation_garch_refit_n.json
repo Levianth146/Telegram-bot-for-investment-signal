@@ -1,0 +1,36 @@
+{
+  "rows": [
+    {
+      "refit_every_n": 1,
+      "sharpe": 0.7334049382654723,
+      "max_drawdown": -0.02572923253360948,
+      "n_trades": 17,
+      "cagr": 0.014774923401633666,
+      "elapsed_sec": 162.38
+    },
+    {
+      "refit_every_n": 5,
+      "sharpe": 0.7334049382654723,
+      "max_drawdown": -0.02572923253360948,
+      "n_trades": 17,
+      "cagr": 0.014774923401633666,
+      "elapsed_sec": 194.91
+    },
+    {
+      "refit_every_n": 21,
+      "sharpe": 0.7334049382654723,
+      "max_drawdown": -0.02572923253360948,
+      "n_trades": 17,
+      "cagr": 0.014774923401633666,
+      "elapsed_sec": 210.22
+    }
+  ],
+  "decision": {
+    "decision": "set_n5",
+    "reason": "|dSharpe|=0.0000 <= 0.1 (N1=0.7334, N5=0.7334) — chap nhan N=5",
+    "config_refit_every_n": 5,
+    "delta_sharpe_n5_vs_n1": 0.0
+  },
+  "threshold_abs_delta_sharpe": 0.1,
+  "mode": "ohlcv"
+}
