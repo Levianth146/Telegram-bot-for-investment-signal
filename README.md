@@ -1,10 +1,10 @@
 # Telegram Bot Tín hiệu Đầu tư Chứng khoán Việt Nam
 
-Bài tập nhóm — kết hợp **Fundamental Filter** (Growth / Quality / Safety / Valuation) với
+Telegram bot — kết hợp **Fundamental Filter** (Growth / Quality / Safety / Valuation) với
 **Quant Regime Engine** (Markov regime, Kalman / OU, GARCH) để phát tín hiệu Mua / Bán /
 Theo dõi trên thị trường Việt Nam.
 
-> Sản phẩm học thuật phục vụ bài tập môn học — **không** phải khuyến nghị đầu tư. Xem ghi chú
+> Sản phẩm học thuật — **không** phải khuyến nghị đầu tư. Xem ghi chú
 > pháp lý trong [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ## Scope hiện tại (V1)
